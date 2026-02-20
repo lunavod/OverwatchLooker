@@ -1,0 +1,15 @@
+[project]
+name = "overwatchlooker"
+version = "0.1.0"
+description = "Overwatch 2 screen analyzer using Claude Vision"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pynput>=1.8.1",
+    "mss>=10.1.0",
+    "anthropic>=0.44.0",
+    "pystray>=0.19.5",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+    "boto3>=1.42.53",
+]
