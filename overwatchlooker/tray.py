@@ -8,7 +8,7 @@ from overwatchlooker.config import ANTHROPIC_API_KEY, AWS_KEY, AWS_SECRET
 from overwatchlooker.display import print_analysis, print_error, print_status
 from overwatchlooker.hotkey import HotkeyListener
 from overwatchlooker.notification import copy_to_clipboard, show_notification
-from overwatchlooker.screenshot import capture_monitor
+from overwatchlooker.screenshot import capture_monitor, save_screenshot
 
 
 def _create_icon_image() -> Image.Image:
@@ -47,6 +47,8 @@ class App:
         try:
             print_status("Hotkey detected! Capturing screenshot...")
             png_bytes = capture_monitor()
+            saved_path = save_screenshot(png_bytes)
+            print_status(f"Screenshot saved to {saved_path}")
             print_status(f"Screenshot captured ({len(png_bytes)} bytes). Sending to Claude...")
             result = analyze_screenshot(png_bytes)
             if result.startswith("NOT_OW2_TAB"):
