@@ -19,3 +19,5 @@ wheels/
 
 # Logs
 *.log
+*.jsonl
+*.mp4
