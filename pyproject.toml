@@ -14,6 +14,9 @@ dependencies = [
     "opencv-python>=4.8.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+    "proc-tap>=1.0.0",
+    "scipy>=1.10.0",
+    "soundfile>=0.12.0",
 ]
 
 [tool.uv.sources]

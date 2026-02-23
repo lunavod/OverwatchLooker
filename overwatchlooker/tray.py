@@ -1,17 +1,23 @@
 import logging
 import threading
+import time
 import traceback
 
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
+from overwatchlooker.audio_listener import AudioListener
 from overwatchlooker.ocr_analyzer import analyze_screenshot
 from overwatchlooker.display import print_analysis, print_error, print_status
 
 _logger = logging.getLogger("overwatchlooker")
 from overwatchlooker.hotkey import HotkeyListener
 from overwatchlooker.notification import copy_to_clipboard, show_notification
-from overwatchlooker.screenshot import capture_monitor, save_screenshot
+from overwatchlooker.screenshot import (
+    capture_monitor,
+    is_ow2_tab_screen,
+    save_screenshot,
+)
 
 
 def _create_icon_image() -> Image.Image:
@@ -27,40 +33,67 @@ def _create_icon_image() -> Image.Image:
     return img
 
 
+_AUDIO_ANALYSIS_DELAY = 5.0  # seconds to wait after audio trigger before analyzing
+
+
 class App:
     def __init__(self):
         self._active = False
         self._hotkey: HotkeyListener | None = None
+        self._audio: AudioListener | None = None
         self._analyzing = False
         self._lock = threading.Lock()
+        self._last_valid_tab: bytes | None = None  # last screenshot that passed tab check
 
-    def _on_hotkey_trigger(self) -> None:
-        """Called from pynput listener thread when hotkey fires."""
+    def _on_tab_press(self) -> None:
+        """Tab press: capture, validate, and save screenshot (no analysis)."""
+        def _delayed_capture():
+            try:
+                time.sleep(1.0)
+                png_bytes = capture_monitor()
+                saved_path = save_screenshot(png_bytes)
+                if is_ow2_tab_screen(png_bytes):
+                    self._last_valid_tab = png_bytes
+                    print_status(f"Tab screenshot saved to {saved_path}")
+                else:
+                    print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
+            except Exception as e:
+                print_error(f"Screenshot capture failed: {e}")
+        threading.Thread(target=_delayed_capture, daemon=True).start()
+
+    def _on_audio_match(self, result: str) -> None:
+        """Audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
         with self._lock:
             if self._analyzing:
-                print_status("Analysis already in progress, ignoring trigger.")
+                print_status("Analysis already in progress, ignoring audio trigger.")
                 return
             self._analyzing = True
 
-        thread = threading.Thread(target=self._run_analysis, daemon=True)
+        thread = threading.Thread(target=self._run_analysis, args=(result,), daemon=True)
         thread.start()
 
-    def _run_analysis(self) -> None:
-        """Capture screenshot, run OCR analysis, print result."""
+    def _run_analysis(self, audio_result: str) -> None:
+        """Wait, then analyze last valid tab screenshot."""
         try:
-            print_status("Hotkey detected! Capturing screenshot...")
-            png_bytes = capture_monitor()
-            saved_path = save_screenshot(png_bytes)
-            print_status(f"Screenshot saved to {saved_path}")
-            print_status(f"Screenshot captured ({len(png_bytes)} bytes). Analyzing with OCR...")
-            result = analyze_screenshot(png_bytes)
+            print_status(f"Audio detected: {audio_result}. "
+                         f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
+            time.sleep(_AUDIO_ANALYSIS_DELAY)
+
+            png_bytes = self._last_valid_tab
+            if png_bytes is None:
+                print_error("No valid Tab screenshot found. Press Tab during the scoreboard first.")
+                show_notification("OverwatchLooker", "No Tab screenshot to analyze.")
+                return
+
+            print_status(f"Analyzing last valid Tab screenshot ({len(png_bytes)} bytes)...")
+            result = analyze_screenshot(png_bytes, audio_result=audio_result)
             if result.startswith("NOT_OW2_TAB"):
                 print_error("Screenshot does not appear to be an OW2 Tab screen.")
                 show_notification("OverwatchLooker", "Not an OW2 Tab screen.")
             else:
                 formatted = print_analysis(result)
                 copy_to_clipboard(formatted)
-                show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
+                show_notification("OverwatchLooker", f"{audio_result} — Analysis copied to clipboard.")
         except Exception as e:
             print_error(f"Analysis failed: {e}")
         finally:
@@ -71,9 +104,11 @@ class App:
         if self._active:
             return
         self._active = True
-        self._hotkey = HotkeyListener(on_trigger=self._on_hotkey_trigger)
+        self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press)
         self._hotkey.start()
-        print_status("Listening for hotkey (Tab + Mouse Side Button)...")
+        self._audio = AudioListener(on_match=self._on_audio_match)
+        self._audio.start()
+        print_status("Listening for Tab (screenshot) and audio (VICTORY/DEFEAT)...")
 
     def _stop_listening(self) -> None:
         if not self._active:
@@ -82,6 +117,9 @@ class App:
         if self._hotkey:
             self._hotkey.stop()
             self._hotkey = None
+        if self._audio:
+            self._audio.stop()
+            self._audio = None
         print_status("Stopped listening.")
 
     def _on_quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:

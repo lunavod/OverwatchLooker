@@ -1,46 +1,74 @@
+import ctypes
+import ctypes.wintypes
 import threading
 from collections.abc import Callable
 
-from pynput import keyboard, mouse
+from pynput import keyboard
+
+_user32 = ctypes.windll.user32
+_psapi = ctypes.windll.psapi
+_kernel32 = ctypes.windll.kernel32
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _get_foreground_exe() -> str:
+    """Return the lowercase executable name of the foreground window."""
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    pid = ctypes.wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        size = ctypes.wintypes.DWORD(260)
+        if _kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return buf.value.rsplit("\\", 1)[-1].lower()
+        return ""
+    finally:
+        _kernel32.CloseHandle(handle)
 
 
 class HotkeyListener:
-    def __init__(self, on_trigger: Callable[[], None]):
-        self._on_trigger = on_trigger
-        self._tab_held = False
+    def __init__(self, on_tab_press: Callable[[], None]):
+        self._on_tab_press = on_tab_press
+        self._tab_fired = False
+        self._alt_held = False
         self._lock = threading.Lock()
         self._kb_listener: keyboard.Listener | None = None
-        self._mouse_listener: mouse.Listener | None = None
 
     def start(self) -> None:
         self._kb_listener = keyboard.Listener(
             on_press=self._on_key_press,
             on_release=self._on_key_release,
         )
-        self._mouse_listener = mouse.Listener(
-            on_click=self._on_click,
-        )
         self._kb_listener.start()
-        self._mouse_listener.start()
 
     def stop(self) -> None:
         if self._kb_listener:
             self._kb_listener.stop()
-        if self._mouse_listener:
-            self._mouse_listener.stop()
 
     def _on_key_press(self, key, *args) -> None:
+        if key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
+            with self._lock:
+                self._alt_held = True
+            return
+
         if key == keyboard.Key.tab:
             with self._lock:
-                self._tab_held = True
+                if self._tab_fired or self._alt_held:
+                    return
+                self._tab_fired = True
+            if _get_foreground_exe() == "overwatch.exe":
+                self._on_tab_press()
 
     def _on_key_release(self, key, *args) -> None:
-        if key == keyboard.Key.tab:
+        if key in (keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
             with self._lock:
-                self._tab_held = False
-
-    def _on_click(self, x: int, y: int, button: mouse.Button, pressed: bool, *args) -> None:
-        if pressed and button in (mouse.Button.x1, mouse.Button.x2):
+                self._alt_held = False
+        elif key == keyboard.Key.tab:
             with self._lock:
-                if self._tab_held:
-                    self._on_trigger()
+                self._tab_fired = False
