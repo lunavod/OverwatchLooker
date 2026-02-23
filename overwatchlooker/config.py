@@ -4,10 +4,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OLLAMA_BASE_URL: str = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-VISION_MODEL: str = os.environ.get("VISION_MODEL", "qwen2.5vl:7b")
-MONITOR_INDEX: int = 1  # mss monitor index (1 = primary display)
+# Analyzer backend: "claude" or "ocr"
+ANALYZER: str = os.environ.get("ANALYZER", "ocr")
+
+# Claude Vision settings
+ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS: int = 16000
+
+# Display
+MONITOR_INDEX: int = 1  # mss monitor index (1 = primary display)
 
 # Audio listener settings
 AUDIO_CHUNK_DURATION: float = 4.0       # seconds of audio in ring buffer

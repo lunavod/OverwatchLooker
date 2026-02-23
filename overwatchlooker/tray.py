@@ -7,7 +7,7 @@ import pystray
 from PIL import Image, ImageDraw, ImageFont
 
 from overwatchlooker.audio_listener import AudioListener
-from overwatchlooker.ocr_analyzer import analyze_screenshot
+from overwatchlooker.config import ANALYZER
 from overwatchlooker.display import print_analysis, print_error, print_status
 
 _logger = logging.getLogger("overwatchlooker")
@@ -85,7 +85,12 @@ class App:
                 show_notification("OverwatchLooker", "No Tab screenshot to analyze.")
                 return
 
-            print_status(f"Analyzing last valid Tab screenshot ({len(png_bytes)} bytes)...")
+            print_status(f"Analyzing last valid Tab screenshot ({len(png_bytes)} bytes) "
+                         f"with {ANALYZER} backend...")
+            if ANALYZER == "claude":
+                from overwatchlooker.analyzer import analyze_screenshot
+            else:
+                from overwatchlooker.ocr_analyzer import analyze_screenshot
             result = analyze_screenshot(png_bytes, audio_result=audio_result)
             if result.startswith("NOT_OW2_TAB"):
                 print_error("Screenshot does not appear to be an OW2 Tab screen.")

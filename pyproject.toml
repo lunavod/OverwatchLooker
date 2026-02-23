@@ -17,6 +17,7 @@ dependencies = [
     "proc-tap>=1.0.0",
     "scipy>=1.10.0",
     "soundfile>=0.12.0",
+    "anthropic>=0.40.0",
 ]
 
 [tool.uv.sources]

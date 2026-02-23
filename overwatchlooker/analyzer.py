@@ -1,12 +1,10 @@
+"""Claude Vision-based scoreboard analyzer for Overwatch 2 Tab screens."""
+
 import base64
 
-from openai import OpenAI
+import anthropic
 
-from overwatchlooker.config import (
-    MAX_TOKENS,
-    OLLAMA_BASE_URL,
-    VISION_MODEL,
-)
+from overwatchlooker.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOKENS
 
 SYSTEM_PROMPT = """\
 You are an Overwatch 2 match analyst. You will be given a screenshot of the \
@@ -71,55 +69,45 @@ NOT_OW2_TAB: This does not appear to be an Overwatch 2 scoreboard screenshot.
 """
 
 
-def analyze_screenshot(png_bytes: bytes) -> str:
-    """Send screenshot to local Ollama vision model and return the analysis text."""
-    image_data = base64.standard_b64encode(png_bytes).decode("utf-8")
-
+def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> str:
+    """Send screenshot to Claude Vision and return the analysis text."""
     from overwatchlooker.display import print_status
 
-    model = VISION_MODEL
-    print_status(f"Image payload: {len(image_data)} chars base64")
-    print_status(f"Backend: Ollama, Model: {model}, max_tokens: {MAX_TOKENS}")
+    image_data = base64.standard_b64encode(png_bytes).decode("utf-8")
+    print_status(f"Sending to Claude ({ANTHROPIC_MODEL})...")
 
-    client = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
-    print_status("Opening stream...")
-    stream = client.chat.completions.create(
-        model=model,
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    user_text = "Analyze this Overwatch 2 Tab screen screenshot. Extract all visible match data."
+    if audio_result:
+        user_text += (
+            f"\n\nNote: audio detection identified this as a {audio_result}. "
+            "Use this as fallback if you cannot read the result text on screen."
+        )
+
+    message = client.messages.create(
+        model=ANTHROPIC_MODEL,
         max_tokens=MAX_TOKENS,
+        system=SYSTEM_PROMPT,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{image_data}",
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": image_data,
                         },
                     },
-                    {
-                        "type": "text",
-                        "text": "Analyze this Overwatch 2 Tab screen screenshot. Extract all visible match data.",
-                    },
+                    {"type": "text", "text": user_text},
                 ],
-            },
+            }
         ],
-        stream=True,
     )
 
-    result_text = ""
-    for chunk in stream:
-        choice = chunk.choices[0] if chunk.choices else None
-        if choice and choice.delta and choice.delta.content:
-            result_text += choice.delta.content
+    usage = message.usage
+    print_status(f"Tokens -- input: {usage.input_tokens}, output: {usage.output_tokens}")
 
-        if choice and choice.finish_reason:
-            print_status(f"Stream done (finish_reason: {choice.finish_reason})")
-
-    if hasattr(stream, "usage") and stream.usage:
-        usage = stream.usage
-        print_status(
-            f"Tokens -- input: {usage.prompt_tokens}, output: {usage.completion_tokens}"
-        )
-
-    return result_text
+    return next(block.text for block in message.content if block.type == "text")
