@@ -1,15 +1,11 @@
 import base64
 
-import anthropic
+from openai import OpenAI
 
 from overwatchlooker.config import (
-    ANTHROPIC_API_KEY,
-    ANTHROPIC_MODEL,
-    AWS_KEY,
-    AWS_REGION,
-    AWS_SECRET,
-    BEDROCK_MODEL,
     MAX_TOKENS,
+    OLLAMA_BASE_URL,
+    VISION_MODEL,
 )
 
 SYSTEM_PROMPT = """\
@@ -75,45 +71,30 @@ NOT_OW2_TAB: This does not appear to be an Overwatch 2 scoreboard screenshot.
 """
 
 
-def _use_bedrock() -> bool:
-    return bool(AWS_KEY and AWS_SECRET)
-
-
 def analyze_screenshot(png_bytes: bytes) -> str:
-    """Send screenshot to Claude Vision and return the analysis text."""
+    """Send screenshot to local Ollama vision model and return the analysis text."""
     image_data = base64.standard_b64encode(png_bytes).decode("utf-8")
 
     from overwatchlooker.display import print_status
 
-    bedrock = _use_bedrock()
-    backend = "Bedrock" if bedrock else "Anthropic"
-    model = BEDROCK_MODEL if bedrock else ANTHROPIC_MODEL
+    model = VISION_MODEL
     print_status(f"Image payload: {len(image_data)} chars base64")
-    print_status(f"Backend: {backend}, Model: {model}, max_tokens: {MAX_TOKENS}")
+    print_status(f"Backend: Ollama, Model: {model}, max_tokens: {MAX_TOKENS}")
 
-    if bedrock:
-        client = anthropic.AnthropicBedrock(
-            aws_access_key=AWS_KEY,
-            aws_secret_key=AWS_SECRET,
-            aws_region=AWS_REGION,
-        )
-    else:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
     print_status("Opening stream...")
-    with client.messages.stream(
+    stream = client.chat.completions.create(
         model=model,
         max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
         messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": image_data,
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_data}",
                         },
                     },
                     {
@@ -121,43 +102,24 @@ def analyze_screenshot(png_bytes: bytes) -> str:
                         "text": "Analyze this Overwatch 2 Tab screen screenshot. Extract all visible match data.",
                     },
                 ],
-            }
+            },
         ],
-    ) as stream:
-        current_block = None
-        for event in stream:
-            if event.type == "content_block_start":
-                block_type = event.content_block.type
-                if block_type == "thinking":
-                    current_block = "thinking"
-                    print_status("Thinking started...")
-                    print("[THINKING] ", end="", flush=True)
-                elif block_type == "text":
-                    current_block = "text"
-                    print_status("Generating response...")
-
-            elif event.type == "content_block_delta":
-                if event.delta.type == "thinking_delta":
-                    print(event.delta.thinking, end="", flush=True)
-                elif event.delta.type == "text_delta":
-                    pass  # don't print response text live, we print it formatted later
-
-            elif event.type == "content_block_stop":
-                if current_block == "thinking":
-                    print()  # newline after thinking output
-                    print_status("Thinking complete.")
-                current_block = None
-
-            elif event.type == "message_delta":
-                reason = getattr(event.delta, "stop_reason", None)
-                if reason:
-                    print_status(f"Stream done (stop_reason: {reason})")
-
-        message = stream.get_final_message()
-
-    usage = message.usage
-    print_status(
-        f"Tokens -- input: {usage.input_tokens}, output: {usage.output_tokens}"
+        stream=True,
     )
 
-    return next(block.text for block in message.content if block.type == "text")
+    result_text = ""
+    for chunk in stream:
+        choice = chunk.choices[0] if chunk.choices else None
+        if choice and choice.delta and choice.delta.content:
+            result_text += choice.delta.content
+
+        if choice and choice.finish_reason:
+            print_status(f"Stream done (finish_reason: {choice.finish_reason})")
+
+    if hasattr(stream, "usage") and stream.usage:
+        usage = stream.usage
+        print_status(
+            f"Tokens -- input: {usage.prompt_tokens}, output: {usage.completion_tokens}"
+        )
+
+    return result_text

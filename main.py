@@ -2,7 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from overwatchlooker.analyzer import analyze_screenshot
+from overwatchlooker.ocr_analyzer import analyze_screenshot
 from overwatchlooker.display import print_analysis, print_error
 from overwatchlooker.notification import copy_to_clipboard, show_notification
 from overwatchlooker.tray import App

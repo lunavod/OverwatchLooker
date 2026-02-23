@@ -3,8 +3,7 @@ import threading
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
-from overwatchlooker.analyzer import analyze_screenshot
-from overwatchlooker.config import ANTHROPIC_API_KEY, AWS_KEY, AWS_SECRET
+from overwatchlooker.ocr_analyzer import analyze_screenshot
 from overwatchlooker.display import print_analysis, print_error, print_status
 from overwatchlooker.hotkey import HotkeyListener
 from overwatchlooker.notification import copy_to_clipboard, show_notification
@@ -43,13 +42,13 @@ class App:
         thread.start()
 
     def _run_analysis(self) -> None:
-        """Capture screenshot, send to Claude, print result."""
+        """Capture screenshot, run OCR analysis, print result."""
         try:
             print_status("Hotkey detected! Capturing screenshot...")
             png_bytes = capture_monitor()
             saved_path = save_screenshot(png_bytes)
             print_status(f"Screenshot saved to {saved_path}")
-            print_status(f"Screenshot captured ({len(png_bytes)} bytes). Sending to Claude...")
+            print_status(f"Screenshot captured ({len(png_bytes)} bytes). Analyzing with OCR...")
             result = analyze_screenshot(png_bytes)
             if result.startswith("NOT_OW2_TAB"):
                 print_error("Screenshot does not appear to be an OW2 Tab screen.")
@@ -94,12 +93,6 @@ class App:
 
     def run(self) -> None:
         """Main entry point -- blocks on the tray icon run loop."""
-        if not ANTHROPIC_API_KEY and not (AWS_KEY and AWS_SECRET):
-            print_error(
-                "No credentials set. Set ANTHROPIC_API_KEY or AWS_KEY+AWS_SECRET in .env file."
-            )
-            return
-
         self._icon = pystray.Icon(
             name="OverwatchLooker",
             icon=_create_icon_image(),

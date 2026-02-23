@@ -10,8 +10,8 @@ from PIL import Image
 
 from overwatchlooker.config import MONITOR_INDEX
 
-MAX_PNG_SIZE = 4_000_000  # 4MB, stay under Claude's 5MB limit
-MAX_LONG_EDGE = 1568  # Claude's optimal image size
+MAX_PNG_SIZE = 4_000_000  # 4MB limit for API payload
+MAX_LONG_EDGE = 1568  # optimal image size for vision models
 CSIDL_MYPICTURES = 0x0027
 
 

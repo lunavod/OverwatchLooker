@@ -1,15 +1,25 @@
 [project]
 name = "overwatchlooker"
 version = "0.1.0"
-description = "Overwatch 2 screen analyzer using Claude Vision"
+description = "Overwatch 2 screen analyzer using EasyOCR"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pynput>=1.8.1",
     "mss>=10.1.0",
-    "anthropic>=0.44.0",
     "pystray>=0.19.5",
     "Pillow>=10.0.0",
     "python-dotenv>=1.0.0",
-    "boto3>=1.42.53",
+    "easyocr>=1.7.0",
+    "opencv-python>=4.8.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
