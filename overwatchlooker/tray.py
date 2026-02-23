@@ -38,7 +38,7 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 
 class App:
-    def __init__(self):
+    def __init__(self, use_telegram: bool = False):
         self._active = False
         self._hotkey: HotkeyListener | None = None
         self._audio: AudioListener | None = None
@@ -46,6 +46,7 @@ class App:
         self._lock = threading.Lock()
         self._last_valid_tab: tuple[bytes, float] | None = None  # (png_bytes, timestamp)
         self._tab_pending = False  # debounce flag
+        self._use_telegram = use_telegram
 
     def _on_tab_press(self) -> None:
         """Tab press: capture, validate, and save screenshot (no analysis)."""
@@ -121,8 +122,16 @@ class App:
                 show_notification("OverwatchLooker", "Not an OW2 Tab screen.")
             else:
                 formatted = print_analysis(result)
-                copy_to_clipboard(formatted)
-                show_notification("OverwatchLooker", f"{audio_result} — Analysis copied to clipboard.")
+                if self._use_telegram:
+                    from overwatchlooker.telegram import send_message
+                    if send_message(formatted):
+                        show_notification("OverwatchLooker", f"{audio_result} — Analysis sent to Telegram.")
+                    else:
+                        print_error("Failed to send to Telegram.")
+                        copy_to_clipboard(formatted)
+                else:
+                    copy_to_clipboard(formatted)
+                    show_notification("OverwatchLooker", f"{audio_result} — Analysis copied to clipboard.")
         except Exception as e:
             print_error(f"Analysis failed: {e}")
         finally:
@@ -139,6 +148,14 @@ class App:
             return
 
         self._active = True
+        if self._use_telegram:
+            from overwatchlooker.config import TELEGRAM_CHANNEL, TELEGRAM_TOKEN
+            if TELEGRAM_TOKEN and TELEGRAM_CHANNEL:
+                print_status(f"Telegram: ON (chat_id={TELEGRAM_CHANNEL})")
+            else:
+                print_error("Telegram: --tg flag set but TELEGRAM_TOKEN or TELEGRAM_CHANNEL missing in .env")
+        else:
+            print_status("Telegram: OFF")
         self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press)
         self._hotkey.start()
         self._audio = AudioListener(on_match=self._on_audio_match)

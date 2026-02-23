@@ -23,3 +23,7 @@ AUDIO_MATCH_THRESHOLD: float = 0.25     # 1D NCC threshold (true match ~0.4, noi
 AUDIO_MATCH_MARGIN: float = 0.10        # winner must beat runner-up by this much
 AUDIO_MIN_RMS: float = 0.0005           # minimum RMS energy to attempt matching
 SCREENSHOT_MAX_AGE_SECONDS: float = 120.0  # max age of screenshot to analyze
+
+# Telegram
+TELEGRAM_TOKEN: str = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHANNEL: str = os.environ.get("TELEGRAM_CHANNEL", "")

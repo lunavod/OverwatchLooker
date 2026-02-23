@@ -15,6 +15,11 @@ def main():
         nargs="?",
         help="Path to an image file to analyze instead of listening for hotkeys",
     )
+    parser.add_argument(
+        "--tg",
+        action="store_true",
+        help="Send results to Telegram instead of copying to clipboard",
+    )
     args = parser.parse_args()
 
     if args.image:
@@ -32,10 +37,17 @@ def main():
             print_error("Image does not appear to be an OW2 Tab screen.")
         else:
             formatted = print_analysis(result)
-            copy_to_clipboard(formatted)
-            show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
+            if args.tg:
+                from overwatchlooker.telegram import send_message
+                if send_message(formatted):
+                    show_notification("OverwatchLooker", "Analysis sent to Telegram.")
+                else:
+                    print_error("Failed to send to Telegram.")
+            else:
+                copy_to_clipboard(formatted)
+                show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
     else:
-        app = App()
+        app = App(use_telegram=args.tg)
         app.run()
 
 
