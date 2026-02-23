@@ -1,6 +1,28 @@
 import datetime
+import logging
+import sys
+from pathlib import Path
 
 SEPARATOR = "=" * 60
+
+# File logger that works even with pythonw (no stdout)
+_log_path = Path(__file__).parent.parent / "overwatchlooker.log"
+logging.basicConfig(
+    filename=str(_log_path),
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+_logger = logging.getLogger("overwatchlooker")
+
+
+def _safe_print(msg: str) -> None:
+    """Print that silently does nothing when stdout is unavailable (pythonw)."""
+    _logger.info(msg)
+    try:
+        print(msg)
+    except Exception:
+        pass
 
 
 def format_analysis(analysis: str) -> str:
@@ -18,15 +40,15 @@ def format_analysis(analysis: str) -> str:
 def print_analysis(analysis: str) -> str:
     """Print the analysis result and return the formatted text."""
     formatted = format_analysis(analysis)
-    print(f"\n{formatted}\n")
+    _safe_print(f"\n{formatted}\n")
     return formatted
 
 
 def print_status(message: str) -> None:
     """Print a status message."""
-    print(f"[OWL] {message}")
+    _safe_print(f"[OWL] {message}")
 
 
 def print_error(message: str) -> None:
     """Print an error message."""
-    print(f"[OWL ERROR] {message}")
+    _safe_print(f"[OWL ERROR] {message}")

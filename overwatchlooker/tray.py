@@ -1,10 +1,14 @@
+import logging
 import threading
+import traceback
 
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
 from overwatchlooker.ocr_analyzer import analyze_screenshot
 from overwatchlooker.display import print_analysis, print_error, print_status
+
+_logger = logging.getLogger("overwatchlooker")
 from overwatchlooker.hotkey import HotkeyListener
 from overwatchlooker.notification import copy_to_clipboard, show_notification
 from overwatchlooker.screenshot import capture_monitor, save_screenshot
@@ -85,11 +89,25 @@ class App:
         icon.stop()
 
     def _on_toggle(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
-        if self._active:
-            self._stop_listening()
-        else:
-            self._start_listening()
-        icon.update_menu()
+        try:
+            _logger.debug(f"Toggle clicked, active={self._active}")
+            if self._active:
+                self._stop_listening()
+            else:
+                self._start_listening()
+            _logger.debug(f"After toggle, active={self._active}")
+            self._rebuild_menu()
+        except Exception:
+            _logger.error(f"Toggle error:\n{traceback.format_exc()}")
+
+    def _rebuild_menu(self) -> None:
+        """Rebuild the tray menu to reflect current state."""
+        label = "Stop Listening" if self._active else "Start Listening"
+        self._icon.menu = pystray.Menu(
+            pystray.MenuItem(label, self._on_toggle, default=True),
+            pystray.MenuItem("Quit", self._on_quit),
+        )
+        self._icon.update_menu()
 
     def run(self) -> None:
         """Main entry point -- blocks on the tray icon run loop."""
@@ -98,18 +116,18 @@ class App:
             icon=_create_icon_image(),
             title="OverwatchLooker",
             menu=pystray.Menu(
-                pystray.MenuItem(
-                    lambda item: "Stop Listening" if self._active else "Start Listening",
-                    self._on_toggle,
-                    default=True,
-                ),
+                pystray.MenuItem("Stop Listening", self._on_toggle, default=True),
                 pystray.MenuItem("Quit", self._on_quit),
             ),
         )
 
         def setup(icon: pystray.Icon):
-            icon.visible = True
-            self._start_listening()
+            try:
+                icon.visible = True
+                self._start_listening()
+                _logger.debug(f"Setup complete, active={self._active}")
+            except Exception:
+                _logger.error(f"Setup error:\n{traceback.format_exc()}")
 
         print_status("OverwatchLooker starting. Check system tray. Press Ctrl+C to quit.")
 
