@@ -7,7 +7,7 @@ import pystray
 from PIL import Image, ImageDraw, ImageFont
 
 from overwatchlooker.audio_listener import AudioListener
-from overwatchlooker.config import ANALYZER
+from overwatchlooker.config import ANALYZER, ANTHROPIC_API_KEY, SCREENSHOT_MAX_AGE_SECONDS
 from overwatchlooker.display import print_analysis, print_error, print_status
 
 _logger = logging.getLogger("overwatchlooker")
@@ -34,6 +34,7 @@ def _create_icon_image() -> Image.Image:
 
 
 _AUDIO_ANALYSIS_DELAY = 5.0  # seconds to wait after audio trigger before analyzing
+_TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 
 class App:
@@ -43,22 +44,35 @@ class App:
         self._audio: AudioListener | None = None
         self._analyzing = False
         self._lock = threading.Lock()
-        self._last_valid_tab: bytes | None = None  # last screenshot that passed tab check
+        self._last_valid_tab: tuple[bytes, float] | None = None  # (png_bytes, timestamp)
+        self._tab_pending = False  # debounce flag
 
     def _on_tab_press(self) -> None:
         """Tab press: capture, validate, and save screenshot (no analysis)."""
+        with self._lock:
+            if self._tab_pending:
+                return
+            self._tab_pending = True
+
         def _delayed_capture():
             try:
                 time.sleep(1.0)
                 png_bytes = capture_monitor()
                 saved_path = save_screenshot(png_bytes)
                 if is_ow2_tab_screen(png_bytes):
-                    self._last_valid_tab = png_bytes
+                    with self._lock:
+                        self._last_valid_tab = (png_bytes, time.monotonic())
                     print_status(f"Tab screenshot saved to {saved_path}")
                 else:
                     print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
             except Exception as e:
                 print_error(f"Screenshot capture failed: {e}")
+            finally:
+                # Release debounce after capture + small cooldown
+                time.sleep(_TAB_DEBOUNCE - 1.0)
+                with self._lock:
+                    self._tab_pending = False
+
         threading.Thread(target=_delayed_capture, daemon=True).start()
 
     def _on_audio_match(self, result: str) -> None:
@@ -79,14 +93,24 @@ class App:
                          f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
             time.sleep(_AUDIO_ANALYSIS_DELAY)
 
-            png_bytes = self._last_valid_tab
-            if png_bytes is None:
+            with self._lock:
+                tab_data = self._last_valid_tab
+
+            if tab_data is None:
                 print_error("No valid Tab screenshot found. Press Tab during the scoreboard first.")
                 show_notification("OverwatchLooker", "No Tab screenshot to analyze.")
                 return
 
-            print_status(f"Analyzing last valid Tab screenshot ({len(png_bytes)} bytes) "
-                         f"with {ANALYZER} backend...")
+            png_bytes, tab_time = tab_data
+            age = time.monotonic() - tab_time
+            if age > SCREENSHOT_MAX_AGE_SECONDS:
+                print_error(f"Last Tab screenshot is {age:.0f}s old (max {SCREENSHOT_MAX_AGE_SECONDS:.0f}s). "
+                            "Press Tab during the scoreboard first.")
+                show_notification("OverwatchLooker", "Tab screenshot too old.")
+                return
+
+            print_status(f"Analyzing Tab screenshot ({len(png_bytes)} bytes, "
+                         f"{age:.0f}s old) with {ANALYZER} backend...")
             if ANALYZER == "claude":
                 from overwatchlooker.analyzer import analyze_screenshot
             else:
@@ -108,12 +132,18 @@ class App:
     def _start_listening(self) -> None:
         if self._active:
             return
+
+        if ANALYZER == "claude" and not ANTHROPIC_API_KEY:
+            print_error("ANALYZER=claude but ANTHROPIC_API_KEY is not set. "
+                        "Set it in .env or use ANALYZER=ocr.")
+            return
+
         self._active = True
         self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press)
         self._hotkey.start()
         self._audio = AudioListener(on_match=self._on_audio_match)
         self._audio.start()
-        print_status("Listening for Tab (screenshot) and audio (VICTORY/DEFEAT)...")
+        print_status(f"Listening (analyzer={ANALYZER}). Tab=screenshot, audio=VICTORY/DEFEAT.")
 
     def _stop_listening(self) -> None:
         if not self._active:

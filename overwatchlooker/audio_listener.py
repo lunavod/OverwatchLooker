@@ -168,11 +168,19 @@ class AudioListener:
             _logger.warning("No reference clips loaded. Audio listener will not detect anything.")
             return
 
+        reconnect_delay = _PID_POLL_INTERVAL
         while self._running:
             # Wait for Overwatch process
             pid = self._wait_for_process()
             if pid is None:
                 return  # _running went False
+
+            # Re-verify PID still belongs to overwatch.exe (guards against PID reuse)
+            verified = _find_process_pid(_OW_EXE)
+            if verified != pid:
+                _logger.warning(f"PID {pid} no longer belongs to {_OW_EXE}, retrying...")
+                time.sleep(reconnect_delay)
+                continue
 
             _logger.info(f"Audio: capturing from overwatch.exe (PID={pid})")
             capture = None
@@ -180,8 +188,10 @@ class AudioListener:
                 capture = ProcessAudioCapture(pid=pid)
                 capture.start()
                 self._run_loop(capture)
+                reconnect_delay = _PID_POLL_INTERVAL  # reset on successful run
             except Exception as e:
                 _logger.warning(f"Audio capture error: {e}")
+                reconnect_delay = min(reconnect_delay * 2, 30.0)  # backoff, cap 30s
             finally:
                 if capture is not None:
                     try:
@@ -190,8 +200,8 @@ class AudioListener:
                         pass
 
             if self._running:
-                _logger.info("Overwatch process lost. Will reconnect...")
-                time.sleep(_PID_POLL_INTERVAL)
+                _logger.info(f"Overwatch process lost. Reconnecting in {reconnect_delay:.0f}s...")
+                time.sleep(reconnect_delay)
 
     def _wait_for_process(self) -> int | None:
         """Poll until overwatch.exe is found or listener is stopped."""
@@ -245,7 +255,9 @@ class AudioListener:
             pending.clear()
             pending_len = 0
 
-            # Shift ring buffer and append new data
+            # Shift ring buffer and append new data (clamp to buffer size)
+            if len(merged) > buffer_samples:
+                merged = merged[-buffer_samples:]
             n = len(merged)
             ring_buffer = np.roll(ring_buffer, -n)
             ring_buffer[-n:] = merged
