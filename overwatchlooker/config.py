@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Analyzer backend: "claude" or "ocr"
-ANALYZER: str = os.environ.get("ANALYZER", "ocr")
+ANALYZER: str = os.environ.get("ANALYZER", "claude")
 
 # Claude Vision settings
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
