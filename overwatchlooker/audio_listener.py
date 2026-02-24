@@ -14,6 +14,7 @@ from scipy.signal import fftconvolve
 
 from overwatchlooker.config import (
     AUDIO_CHUNK_DURATION,
+    AUDIO_CONFIRM_HOPS,
     AUDIO_COOLDOWN_SECONDS,
     AUDIO_HOP_DURATION,
     AUDIO_MATCH_MARGIN,
@@ -225,6 +226,11 @@ class AudioListener:
         pending: list[np.ndarray] = []
         pending_len = 0
 
+        confirm_label: str | None = None
+        confirm_count = 0
+        last_loud_time = time.monotonic()
+        silence_reconnect_threshold = 30.0  # reconnect if silent for this long
+
         _logger.info("Audio listener started.")
 
         while self._running:
@@ -270,7 +276,11 @@ class AudioListener:
             # Energy gate — skip matching when audio is too quiet
             rms = float(np.sqrt(np.mean(ring_buffer ** 2)))
             if rms < AUDIO_MIN_RMS:
+                if now - last_loud_time > silence_reconnect_threshold:
+                    _logger.info("Audio silent for 30s, reconnecting capture...")
+                    break  # trigger reconnect in _run()
                 continue
+            last_loud_time = now
 
             # Match against references (1D time-domain NCC)
             scores: dict[str, float] = {}
@@ -286,6 +296,8 @@ class AudioListener:
 
             # Must exceed threshold
             if best_score < AUDIO_MATCH_THRESHOLD:
+                confirm_label = None
+                confirm_count = 0
                 continue
 
             # Must beat runner-up by margin
@@ -295,10 +307,27 @@ class AudioListener:
                     _logger.debug(f"Audio match rejected: margin too small "
                                   f"({best_label}={best_score:.4f} vs "
                                   f"{ranked[1][0]}={runner_up_score:.4f})")
+                    confirm_label = None
+                    confirm_count = 0
                     continue
 
-            _logger.info(f"Audio match: {best_label} (score={best_score:.4f})")
+            # Require consecutive hops above threshold to confirm
+            if best_label == confirm_label:
+                confirm_count += 1
+            else:
+                confirm_label = best_label
+                confirm_count = 1
+
+            if confirm_count < AUDIO_CONFIRM_HOPS:
+                _logger.debug(f"Audio confirm {best_label}: {confirm_count}/{AUDIO_CONFIRM_HOPS} "
+                              f"(score={best_score:.4f})")
+                continue
+
+            _logger.info(f"Audio match: {best_label} (score={best_score:.4f}, "
+                         f"confirmed over {confirm_count} hops)")
             self._last_trigger_time = now
+            confirm_label = None
+            confirm_count = 0
             self._on_match(best_label)
 
     def _load_references(self, target_sr: int) -> None:

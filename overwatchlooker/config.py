@@ -19,11 +19,13 @@ MONITOR_INDEX: int = 1  # mss monitor index (1 = primary display)
 AUDIO_CHUNK_DURATION: float = 4.0       # seconds of audio in ring buffer
 AUDIO_HOP_DURATION: float = 0.5         # seconds between processing steps
 AUDIO_COOLDOWN_SECONDS: float = 30.0    # minimum seconds between detections
-AUDIO_MATCH_THRESHOLD: float = 0.25     # 1D NCC threshold (true match ~0.4, noise <0.08)
+AUDIO_MATCH_THRESHOLD: float = 0.28     # 1D NCC threshold (require consecutive hops to confirm)
+AUDIO_CONFIRM_HOPS: int = 2            # must exceed threshold for this many consecutive hops
 AUDIO_MATCH_MARGIN: float = 0.10        # winner must beat runner-up by this much
 AUDIO_MIN_RMS: float = 0.0005           # minimum RMS energy to attempt matching
 SCREENSHOT_MAX_AGE_SECONDS: float = 120.0  # max age of screenshot to analyze
 
-# Telegram
-TELEGRAM_TOKEN: str = os.environ.get("TELEGRAM_TOKEN", "")
+# Telegram (Telethon user client)
+TELEGRAM_API_ID: str = os.environ.get("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH: str = os.environ.get("TELEGRAM_API_HASH", "")
 TELEGRAM_CHANNEL: str = os.environ.get("TELEGRAM_CHANNEL", "")

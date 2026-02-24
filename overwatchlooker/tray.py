@@ -44,37 +44,55 @@ class App:
         self._audio: AudioListener | None = None
         self._analyzing = False
         self._lock = threading.Lock()
-        self._last_valid_tab: tuple[bytes, float] | None = None  # (png_bytes, timestamp)
+        self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
         self._tab_pending = False  # debounce flag
+        self._tab_held = False
         self._use_telegram = use_telegram
 
     def _on_tab_press(self) -> None:
-        """Tab press: capture, validate, and save screenshot (no analysis)."""
+        """Tab press: capture screenshots while held, retrying until valid."""
         with self._lock:
             if self._tab_pending:
                 return
             self._tab_pending = True
+            self._tab_held = True
 
-        def _delayed_capture():
+        def _capture_loop():
             try:
                 time.sleep(1.0)
-                png_bytes = capture_monitor()
-                saved_path = save_screenshot(png_bytes)
-                if is_ow2_tab_screen(png_bytes):
+                got_valid = False
+                while True:
                     with self._lock:
-                        self._last_valid_tab = (png_bytes, time.monotonic())
-                    print_status(f"Tab screenshot saved to {saved_path}")
-                else:
-                    print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
+                        if not self._tab_held:
+                            break
+                    png_bytes = capture_monitor()
+                    saved_path = save_screenshot(png_bytes)
+                    if is_ow2_tab_screen(png_bytes):
+                        with self._lock:
+                            self._valid_tabs.append((png_bytes, time.monotonic(), saved_path.name))
+                            if len(self._valid_tabs) > 2:
+                                self._valid_tabs.pop(0)
+                        print_status(f"Tab screenshot saved to {saved_path}")
+                        got_valid = True
+                        break
+                    else:
+                        print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
+                    time.sleep(0.5)
+                if not got_valid:
+                    # Tab released before we got a valid screenshot — save last capture anyway
+                    print_status("Tab released without valid Tab screen capture.")
             except Exception as e:
                 print_error(f"Screenshot capture failed: {e}")
             finally:
-                # Release debounce after capture + small cooldown
-                time.sleep(_TAB_DEBOUNCE - 1.0)
+                time.sleep(0.5)
                 with self._lock:
                     self._tab_pending = False
 
-        threading.Thread(target=_delayed_capture, daemon=True).start()
+        threading.Thread(target=_capture_loop, daemon=True).start()
+
+    def _on_tab_release(self) -> None:
+        with self._lock:
+            self._tab_held = False
 
     def _on_audio_match(self, result: str) -> None:
         """Audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
@@ -88,50 +106,66 @@ class App:
         thread.start()
 
     def _run_analysis(self, audio_result: str) -> None:
-        """Wait, then analyze last valid tab screenshot."""
+        """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
             print_status(f"Audio detected: {audio_result}. "
                          f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
+            show_notification("OverwatchLooker", f"{audio_result} detected! Analyzing...")
             time.sleep(_AUDIO_ANALYSIS_DELAY)
 
             with self._lock:
-                tab_data = self._last_valid_tab
+                tabs = list(self._valid_tabs)
 
-            if tab_data is None:
+            if not tabs:
                 print_error("No valid Tab screenshot found. Press Tab during the scoreboard first.")
                 show_notification("OverwatchLooker", "No Tab screenshot to analyze.")
                 return
 
-            png_bytes, tab_time = tab_data
-            age = time.monotonic() - tab_time
-            if age > SCREENSHOT_MAX_AGE_SECONDS:
-                print_error(f"Last Tab screenshot is {age:.0f}s old (max {SCREENSHOT_MAX_AGE_SECONDS:.0f}s). "
-                            "Press Tab during the scoreboard first.")
-                show_notification("OverwatchLooker", "Tab screenshot too old.")
-                return
+            # Try most recent first, then fall back to previous
+            for i, (png_bytes, tab_time, filename) in enumerate(reversed(tabs)):
+                age = time.monotonic() - tab_time
+                if age > SCREENSHOT_MAX_AGE_SECONDS:
+                    continue
 
-            print_status(f"Analyzing Tab screenshot ({len(png_bytes)} bytes, "
-                         f"{age:.0f}s old) with {ANALYZER} backend...")
-            if ANALYZER == "claude":
-                from overwatchlooker.analyzer import analyze_screenshot
-            else:
-                from overwatchlooker.ocr_analyzer import analyze_screenshot
-            result = analyze_screenshot(png_bytes, audio_result=audio_result)
-            if result.startswith("NOT_OW2_TAB"):
-                print_error("Screenshot does not appear to be an OW2 Tab screen.")
-                show_notification("OverwatchLooker", "Not an OW2 Tab screen.")
-            else:
+                is_fallback = i > 0
+                if is_fallback:
+                    time_diff = tabs[-1][1] - tab_time
+                    print_status(f"Latest screenshot rejected by analyzer. "
+                                 f"Falling back to previous ({time_diff:.0f}s older).")
+
+                print_status(f"Analyzing {filename} ({len(png_bytes)} bytes, "
+                             f"{age:.0f}s old) with {ANALYZER} backend...")
+                if ANALYZER == "claude":
+                    from overwatchlooker.analyzer import analyze_screenshot
+                else:
+                    from overwatchlooker.ocr_analyzer import analyze_screenshot
+                result = analyze_screenshot(png_bytes, audio_result=audio_result)
+
+                if result.startswith("NOT_OW2_TAB"):
+                    print_status("Analyzer rejected screenshot as not OW2 Tab.")
+                    continue
+
                 formatted = print_analysis(result)
+                if is_fallback:
+                    notif_msg = (f"{audio_result} — Used fallback screenshot "
+                                 f"({time_diff:.0f}s older, latest was rejected).")
+                else:
+                    notif_msg = audio_result
                 if self._use_telegram:
                     from overwatchlooker.telegram import send_message
                     if send_message(formatted):
-                        show_notification("OverwatchLooker", f"{audio_result} — Analysis sent to Telegram.")
+                        show_notification("OverwatchLooker", f"{notif_msg} — Sent to Telegram.")
                     else:
                         print_error("Failed to send to Telegram.")
                         copy_to_clipboard(formatted)
                 else:
                     copy_to_clipboard(formatted)
-                    show_notification("OverwatchLooker", f"{audio_result} — Analysis copied to clipboard.")
+                    show_notification("OverwatchLooker", f"{notif_msg} — Copied to clipboard.")
+                return
+
+            # All screenshots were rejected or too old
+            print_error("No usable Tab screenshot found.")
+            show_notification("OverwatchLooker", "All Tab screenshots rejected or too old.")
         except Exception as e:
             print_error(f"Analysis failed: {e}")
         finally:
@@ -149,14 +183,15 @@ class App:
 
         self._active = True
         if self._use_telegram:
-            from overwatchlooker.config import TELEGRAM_CHANNEL, TELEGRAM_TOKEN
-            if TELEGRAM_TOKEN and TELEGRAM_CHANNEL:
+            from overwatchlooker.config import TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_CHANNEL
+            if TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_CHANNEL:
                 print_status(f"Telegram: ON (chat_id={TELEGRAM_CHANNEL})")
             else:
-                print_error("Telegram: --tg flag set but TELEGRAM_TOKEN or TELEGRAM_CHANNEL missing in .env")
+                print_error("Telegram: --tg flag set but TELEGRAM_API_ID, TELEGRAM_API_HASH, or TELEGRAM_CHANNEL missing in .env")
         else:
             print_status("Telegram: OFF")
-        self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press)
+        self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press,
+                                      on_tab_release=self._on_tab_release)
         self._hotkey.start()
         self._audio = AudioListener(on_match=self._on_audio_match)
         self._audio.start()

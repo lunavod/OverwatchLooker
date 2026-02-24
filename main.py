@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from overwatchlooker.config import ANALYZER
-from overwatchlooker.display import print_analysis, print_error
+from overwatchlooker.display import print_analysis, print_error, print_status
 from overwatchlooker.notification import copy_to_clipboard, show_notification
 from overwatchlooker.tray import App
 
@@ -20,6 +20,22 @@ def main():
         action="store_true",
         help="Send results to Telegram instead of copying to clipboard",
     )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Bypass cache and re-analyze from scratch",
+    )
+    result_group = parser.add_mutually_exclusive_group()
+    result_group.add_argument(
+        "--win",
+        action="store_true",
+        help="Hint that the match result is VICTORY",
+    )
+    result_group.add_argument(
+        "--loss",
+        action="store_true",
+        help="Hint that the match result is DEFEAT",
+    )
     args = parser.parse_args()
 
     if args.image:
@@ -28,11 +44,24 @@ def main():
             print_error(f"File not found: {path}")
             sys.exit(1)
         png_bytes = path.read_bytes()
-        if ANALYZER == "claude":
-            from overwatchlooker.analyzer import analyze_screenshot
-        else:
-            from overwatchlooker.ocr_analyzer import analyze_screenshot
-        result = analyze_screenshot(png_bytes)
+
+        from overwatchlooker import cache
+
+        result = None
+        if not args.clean:
+            result = cache.get(png_bytes, ANALYZER)
+            if result:
+                print_status("Using cached result.")
+
+        if result is None:
+            if ANALYZER == "claude":
+                from overwatchlooker.analyzer import analyze_screenshot
+            else:
+                from overwatchlooker.ocr_analyzer import analyze_screenshot
+            audio_result = "VICTORY" if args.win else "DEFEAT" if args.loss else None
+            result = analyze_screenshot(png_bytes, audio_result=audio_result)
+            cache.put(png_bytes, ANALYZER, result)
+
         if result.startswith("NOT_OW2_TAB"):
             print_error("Image does not appear to be an OW2 Tab screen.")
         else:

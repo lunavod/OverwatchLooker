@@ -61,10 +61,11 @@ def get_latest_screenshot() -> Path | None:
 
 
 def is_ow2_tab_screen(png_bytes: bytes) -> bool:
-    """Fast check (~1ms) whether a screenshot is an OW2 Tab scoreboard.
+    """Fast check whether a screenshot is an OW2 Tab scoreboard.
 
-    Samples the center of the your-team and enemy-team regions and checks
-    that they have the expected blue / red hues.
+    The Tab screen always has a solid-colored panel across the top.
+    We check that the left 30% of the top panel (y 2-6%) is a single
+    uniform color (≤2 unique colors to allow minor compression artifacts).
     """
     arr = np.frombuffer(png_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -72,28 +73,10 @@ def is_ow2_tab_screen(png_bytes: bytes) -> bool:
         return False
     h, w = img.shape[:2]
 
-    # Your team region: blue/teal rows  (region 0.121,0.180 → 0.621,0.500)
-    # Sample a small patch in the center
-    yt_cy = int(0.34 * h)
-    yt_cx = int(0.37 * w)
-    yt_patch = img[yt_cy - 5 : yt_cy + 5, yt_cx - 20 : yt_cx + 20]
-
-    # Enemy team region: red/pink rows  (region 0.121,0.545 → 0.621,0.865)
-    et_cy = int(0.70 * h)
-    et_cx = int(0.37 * w)
-    et_patch = img[et_cy - 5 : et_cy + 5, et_cx - 20 : et_cx + 20]
-
-    yt_hsv = cv2.cvtColor(yt_patch, cv2.COLOR_BGR2HSV)
-    et_hsv = cv2.cvtColor(et_patch, cv2.COLOR_BGR2HSV)
-
-    yt_hue = float(np.median(yt_hsv[:, :, 0]))
-    et_hue = float(np.median(et_hsv[:, :, 0]))
-
-    # OpenCV hue range is 0-179. Blue/teal ≈ 85-130, Red ≈ 0-10 or 170-179
-    blue_ok = 85 <= yt_hue <= 130
-    red_ok = et_hue <= 15 or et_hue >= 165
-
-    return blue_ok and red_ok
+    # Middle 30% of top panel (y 2-6%) — avoids tabs on left and map text on right
+    strip = img[int(0.02 * h):int(0.06 * h), int(0.35 * w):int(0.65 * w)]
+    unique = len(np.unique(strip.reshape(-1, 3), axis=0))
+    return unique <= 2
 
 
 def capture_monitor() -> bytes:

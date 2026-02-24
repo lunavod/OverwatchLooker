@@ -33,8 +33,10 @@ def _get_foreground_exe() -> str:
 
 
 class HotkeyListener:
-    def __init__(self, on_tab_press: Callable[[], None]):
+    def __init__(self, on_tab_press: Callable[[], None],
+                 on_tab_release: Callable[[], None] | None = None):
         self._on_tab_press = on_tab_press
+        self._on_tab_release = on_tab_release
         self._tab_fired = False
         self._alt_held = False
         self._lock = threading.Lock()
@@ -72,3 +74,5 @@ class HotkeyListener:
         elif key == keyboard.Key.tab:
             with self._lock:
                 self._tab_fired = False
+            if self._on_tab_release:
+                self._on_tab_release()

@@ -6,7 +6,9 @@ from pathlib import Path
 SEPARATOR = "=" * 60
 
 # File logger that works even with pythonw (no stdout)
-_log_path = Path(__file__).parent.parent / "overwatchlooker.log"
+_logs_dir = Path(__file__).parent.parent / "logs"
+_logs_dir.mkdir(exist_ok=True)
+_log_path = _logs_dir / f"{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
 logging.basicConfig(
     filename=str(_log_path),
     level=logging.DEBUG,
