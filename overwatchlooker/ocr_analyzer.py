@@ -64,6 +64,7 @@ class MatchData:
     map_name: str = ""
     time: str = ""
     mode: str = ""
+    queue_type: str = ""
     result: str = "UNKNOWN"
     your_team: list[PlayerStats] = field(default_factory=list)
     enemy_team: list[PlayerStats] = field(default_factory=list)
@@ -77,8 +78,8 @@ def _crop_region(img: np.ndarray, region: tuple[float, float, float, float]) -> 
     return img[y1:y2, x1:x2]
 
 
-def _extract_map_header(img: np.ndarray) -> tuple[str, str, str]:
-    """Extract (mode, map_name, time) from the top-right header."""
+def _extract_map_header(img: np.ndarray) -> tuple[str, str, str, str]:
+    """Extract (mode, map_name, time, queue_type) from the top-right header."""
     crop = _crop_region(img, REGION_MAP_HEADER)
     upscaled = cv2.resize(crop, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
 
@@ -91,6 +92,13 @@ def _extract_map_header(img: np.ndarray) -> tuple[str, str, str]:
     # Fix split time: "1 0:00" -> "10:00", "1 2.24" -> "12.24"
     # Merge lone digit before a digit-separator-XX pattern (: or . as separator)
     raw = re.sub(r"(\d)\s+(\d[:.]\d{2})", r"\1\2", raw)
+
+    # Detect queue type: competitive mode includes "- COMPETITIVE" in mode text
+    if "COMPETITIVE" in raw:
+        queue_type = "COMPETITIVE"
+        raw = re.sub(r"[-–—]?\s*COMPETITIVE", "", raw).strip()
+    else:
+        queue_type = "QUICKPLAY"
 
     mode, map_name, time_str = "", "", ""
     modes = ["CONTROL", "ESCORT", "PUSH", "HYBRID", "CLASH", "FLASHPOINT"]
@@ -129,7 +137,10 @@ def _extract_map_header(img: np.ndarray) -> tuple[str, str, str]:
             if t:
                 time_str = f"{t.group(1)}:{t.group(2)}"
 
-    return mode, map_name, time_str
+    # Strip leading digits from map name (rank icons misread as digits by OCR)
+    map_name = re.sub(r"^\d+\s*", "", map_name)
+
+    return mode, map_name, time_str, queue_type
 
 
 def _extract_result(img: np.ndarray) -> str:
@@ -461,6 +472,7 @@ def _format_output(data: MatchData) -> str:
         f"MAP: {data.map_name}",
         f"TIME: {data.time}",
         f"MODE: {data.mode}",
+        f"QUEUE: {data.queue_type}",
         f"RESULT: {data.result}",
         "",
         "=== YOUR TEAM ===",
@@ -505,7 +517,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> str
         return "NOT_OW2_TAB: This does not appear to be an Overwatch 2 scoreboard screenshot."
 
     print_status("Extracting map header...")
-    mode, map_name, time_str = _extract_map_header(img)
+    mode, map_name, time_str, queue_type = _extract_map_header(img)
 
     print_status("Extracting result...")
     result = _extract_result(img)
@@ -526,6 +538,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> str
             map_name=map_name,
             time=time_str,
             mode=mode,
+            queue_type=queue_type,
             result=result,
             your_team=your_team,
             enemy_team=enemy_team,
