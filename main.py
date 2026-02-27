@@ -1,6 +1,9 @@
 import argparse
+import io
 import sys
 from pathlib import Path
+
+from PIL import Image
 
 from overwatchlooker.config import ANALYZER
 from overwatchlooker.display import print_analysis, print_error, print_status
@@ -19,6 +22,11 @@ def main():
         "--tg",
         action="store_true",
         help="Send results to Telegram instead of copying to clipboard",
+    )
+    parser.add_argument(
+        "--audio",
+        action="store_true",
+        help="Use audio-based detection instead of subtitle OCR (requires proc-tap)",
     )
     parser.add_argument(
         "--clean",
@@ -43,7 +51,10 @@ def main():
         if not path.is_file():
             print_error(f"File not found: {path}")
             sys.exit(1)
-        png_bytes = path.read_bytes()
+        img = Image.open(path)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
 
         from overwatchlooker import cache
 
@@ -76,7 +87,7 @@ def main():
                 copy_to_clipboard(formatted)
                 show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
     else:
-        app = App(use_telegram=args.tg)
+        app = App(use_telegram=args.tg, use_audio=args.audio)
         app.run()
 
 

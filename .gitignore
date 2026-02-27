@@ -12,6 +12,9 @@ wheels/
 # Environment variables
 .env
 
+# Claude Code
+.claude/
+
 *.jpg
 *.jpeg
 *.png

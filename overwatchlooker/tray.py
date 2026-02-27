@@ -6,7 +6,6 @@ import traceback
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
-from overwatchlooker.audio_listener import AudioListener
 from overwatchlooker.config import ANALYZER, ANTHROPIC_API_KEY, SCREENSHOT_MAX_AGE_SECONDS
 from overwatchlooker.display import print_analysis, print_error, print_status
 
@@ -38,16 +37,17 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 
 class App:
-    def __init__(self, use_telegram: bool = False):
+    def __init__(self, use_telegram: bool = False, use_audio: bool = False):
         self._active = False
         self._hotkey: HotkeyListener | None = None
-        self._audio: AudioListener | None = None
+        self._detector = None  # SubtitleListener or AudioListener
         self._analyzing = False
         self._lock = threading.Lock()
         self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
         self._tab_pending = False  # debounce flag
         self._tab_held = False
         self._use_telegram = use_telegram
+        self._use_audio = use_audio
 
     def _on_tab_press(self) -> None:
         """Tab press: capture screenshots while held, retrying until valid."""
@@ -94,23 +94,23 @@ class App:
         with self._lock:
             self._tab_held = False
 
-    def _on_audio_match(self, result: str) -> None:
-        """Audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
+    def _on_detection(self, result: str) -> None:
+        """Subtitle or audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
         with self._lock:
             if self._analyzing:
-                print_status("Analysis already in progress, ignoring audio trigger.")
+                print_status("Analysis already in progress, ignoring detection trigger.")
                 return
             self._analyzing = True
 
         thread = threading.Thread(target=self._run_analysis, args=(result,), daemon=True)
         thread.start()
 
-    def _run_analysis(self, audio_result: str) -> None:
+    def _run_analysis(self, detection_result: str) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
-            print_status(f"Audio detected: {audio_result}. "
+            print_status(f"Detected: {detection_result}. "
                          f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
-            show_notification("OverwatchLooker", f"{audio_result} detected! Analyzing...")
+            show_notification("OverwatchLooker", f"{detection_result} detected! Analyzing...")
             time.sleep(_AUDIO_ANALYSIS_DELAY)
 
             with self._lock:
@@ -139,7 +139,7 @@ class App:
                     from overwatchlooker.analyzer import analyze_screenshot
                 else:
                     from overwatchlooker.ocr_analyzer import analyze_screenshot
-                result = analyze_screenshot(png_bytes, audio_result=audio_result)
+                result = analyze_screenshot(png_bytes, audio_result=detection_result)
 
                 if result.startswith("NOT_OW2_TAB"):
                     print_status("Analyzer rejected screenshot as not OW2 Tab.")
@@ -147,10 +147,10 @@ class App:
 
                 formatted = print_analysis(result)
                 if is_fallback:
-                    notif_msg = (f"{audio_result} — Used fallback screenshot "
+                    notif_msg = (f"{detection_result} — Used fallback screenshot "
                                  f"({time_diff:.0f}s older, latest was rejected).")
                 else:
-                    notif_msg = audio_result
+                    notif_msg = detection_result
                 if self._use_telegram:
                     from overwatchlooker.telegram import send_message
                     if send_message(formatted):
@@ -193,9 +193,16 @@ class App:
         self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press,
                                       on_tab_release=self._on_tab_release)
         self._hotkey.start()
-        self._audio = AudioListener(on_match=self._on_audio_match)
-        self._audio.start()
-        print_status(f"Listening (analyzer={ANALYZER}). Tab=screenshot, audio=VICTORY/DEFEAT.")
+        if self._use_audio:
+            from overwatchlooker.audio_listener import AudioListener
+            self._detector = AudioListener(on_match=self._on_detection)
+            detect_mode = "audio"
+        else:
+            from overwatchlooker.subtitle_listener import SubtitleListener
+            self._detector = SubtitleListener(on_match=self._on_detection)
+            detect_mode = "subtitle"
+        self._detector.start()
+        print_status(f"Listening (analyzer={ANALYZER}, detection={detect_mode}). Tab=screenshot.")
 
     def _stop_listening(self) -> None:
         if not self._active:
@@ -204,10 +211,27 @@ class App:
         if self._hotkey:
             self._hotkey.stop()
             self._hotkey = None
-        if self._audio:
-            self._audio.stop()
-            self._audio = None
+        if self._detector:
+            self._detector.stop()
+            self._detector = None
         print_status("Stopped listening.")
+
+    def _on_submit_tab(self, result: str) -> None:
+        """Manually submit last tab screenshot with a given result."""
+        with self._lock:
+            if self._analyzing:
+                print_status("Analysis already in progress.")
+                return
+            self._analyzing = True
+
+        thread = threading.Thread(target=self._run_analysis, args=(result,), daemon=True)
+        thread.start()
+
+    def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        self._on_submit_tab("VICTORY")
+
+    def _on_submit_loss(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        self._on_submit_tab("DEFEAT")
 
     def _on_quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         self._stop_listening()
@@ -230,6 +254,8 @@ class App:
         label = "Stop Listening" if self._active else "Start Listening"
         self._icon.menu = pystray.Menu(
             pystray.MenuItem(label, self._on_toggle, default=True),
+            pystray.MenuItem("Submit last tab (win)", self._on_submit_win),
+            pystray.MenuItem("Submit last tab (loss)", self._on_submit_loss),
             pystray.MenuItem("Quit", self._on_quit),
         )
         self._icon.update_menu()
@@ -242,6 +268,8 @@ class App:
             title="OverwatchLooker",
             menu=pystray.Menu(
                 pystray.MenuItem("Stop Listening", self._on_toggle, default=True),
+                pystray.MenuItem("Submit last tab (win)", self._on_submit_win),
+                pystray.MenuItem("Submit last tab (loss)", self._on_submit_loss),
                 pystray.MenuItem("Quit", self._on_quit),
             ),
         )

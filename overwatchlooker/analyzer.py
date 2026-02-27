@@ -48,11 +48,14 @@ Extract and report the following information in a structured format:
 
 1. MAP: The map name (shown at the top of the screen).
 2. MATCH TIME: The elapsed match time or round timer visible on screen.
-3. GAME MODE: The game mode if identifiable (Push, Control, Escort, Hybrid, Clash, Flashpoint).
-4. MATCH RESULT: Check for ATHENA subtitle text on screen announcing \
+3. GAME MODE: The game mode if identifiable (Push, Control, Escort, Hybrid, Clash, Flashpoint). \
+In competitive matches, the mode text on screen includes "- COMPETITIVE" (e.g. "ESCORT - COMPETITIVE"). \
+Strip this suffix and report the base mode only.
+4. QUEUE TYPE: If the mode text includes "- COMPETITIVE", this is COMPETITIVE. Otherwise, QUICKPLAY.
+5. MATCH RESULT: Check for ATHENA subtitle text on screen announcing \
 "VICTORY" or "DEFEAT". This appears as large centered text overlaying the \
 scoreboard at the end of a round or match.
-5. YOUR TEAM and ENEMY TEAM scoreboard stats:
+6. YOUR TEAM and ENEMY TEAM scoreboard stats:
    Each row on the scoreboard has the following layout from left to right: \
 role icon (shield = TANK, bullets/crosshair = DPS, plus/cross = SUPPORT), \
 hero portrait, player ult charge percentage, player name (BattleTag), \
@@ -70,6 +73,7 @@ Format your response EXACTLY as follows (do not deviate from this structure):
 MAP: <map name>
 TIME: <match time>
 MODE: <game mode>
+QUEUE TYPE: <QUICKPLAY or COMPETITIVE>
 RESULT: <VICTORY, DEFEAT, or UNKNOWN>
 
 === YOUR TEAM ===
