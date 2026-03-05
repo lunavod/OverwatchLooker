@@ -37,7 +37,7 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 
 class App:
-    def __init__(self, use_telegram: bool = False, use_audio: bool = False):
+    def __init__(self, use_telegram: bool = False, use_mcp: bool = False, use_audio: bool = False):
         self._active = False
         self._hotkey: HotkeyListener | None = None
         self._detector = None  # SubtitleListener or AudioListener
@@ -47,6 +47,7 @@ class App:
         self._tab_pending = False  # debounce flag
         self._tab_held = False
         self._use_telegram = use_telegram
+        self._use_mcp = use_mcp
         self._use_audio = use_audio
 
     def _on_tab_press(self) -> None:
@@ -141,11 +142,27 @@ class App:
                     from overwatchlooker.ocr_analyzer import analyze_screenshot
                 result = analyze_screenshot(png_bytes, audio_result=detection_result)
 
-                if result.startswith("NOT_OW2_TAB"):
-                    print_status("Analyzer rejected screenshot as not OW2 Tab.")
-                    continue
+                # Handle dict (claude structured output) vs str (ocr)
+                if isinstance(result, dict):
+                    if result.get("not_ow2_tab"):
+                        print_status("Analyzer rejected screenshot as not OW2 Tab.")
+                        continue
+                    from overwatchlooker.analyzer import format_match
+                    display_text = format_match(result)
+                else:
+                    if result.startswith("NOT_OW2_TAB"):
+                        print_status("Analyzer rejected screenshot as not OW2 Tab.")
+                        continue
+                    display_text = result
 
-                formatted = print_analysis(result)
+                formatted = print_analysis(display_text)
+                if self._use_mcp and isinstance(result, dict):
+                    from overwatchlooker.mcp_client import submit_match
+                    try:
+                        submit_match(result)
+                        print_status("Uploaded to MCP.")
+                    except Exception as e:
+                        print_error(f"MCP upload failed: {e}")
                 if is_fallback:
                     notif_msg = (f"{detection_result} — Used fallback screenshot "
                                  f"({time_diff:.0f}s older, latest was rejected).")

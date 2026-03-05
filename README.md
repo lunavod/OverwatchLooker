@@ -1,6 +1,6 @@
 # OverwatchLooker
 
-Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero abilities), and copies it to clipboard or sends it to Telegram.
+Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero abilities), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
 
 Two analyzer backends: **Claude Vision** (cloud, default) or **EasyOCR** (local, GPU-accelerated). Two detection modes for automatic triggering: **subtitle OCR** (default) or **audio matching**.
 
@@ -21,10 +21,16 @@ ANALYZER=claude
 # Required for Claude backend
 ANTHROPIC_API_KEY=sk-ant-...
 
+# Optional: player identity (improves self-player detection)
+OVERWATCH_USERNAME=LUNAVOD
+
 # Optional: Telegram integration (Telethon user client)
 TELEGRAM_API_ID=...
 TELEGRAM_API_HASH=...
 TELEGRAM_CHANNEL=...   # chat ID (e.g. -5033067937)
+
+# Optional: MCP server for match data storage
+MCP_URL=https://your-mcp-server.example.com/mcp
 ```
 
 ## Usage
@@ -34,6 +40,7 @@ TELEGRAM_CHANNEL=...   # chat ID (e.g. -5033067937)
 ```bash
 uv run python main.py
 uv run python main.py --tg       # send results to Telegram
+uv run python main.py --mcp      # upload structured match data to MCP server
 uv run python main.py --audio    # use audio detection instead of subtitle OCR
 ```
 
@@ -68,6 +75,7 @@ Analyzes a saved screenshot directly. Results are cached on disk (`cache/`) and 
 | Flag | Description |
 |---------|-------------|
 | `--tg` | Send results to Telegram instead of clipboard |
+| `--mcp` | Upload structured match data to the MCP server |
 | `--audio` | Use audio-based victory/defeat detection (requires proc-tap) |
 | `--clean` | Bypass disk cache and re-analyze from scratch |
 | `--win` | Hint that the match result is VICTORY |
@@ -128,10 +136,11 @@ Reference clips go in `refs/` as `victory.wav` and `defeat.wav` (also supports `
 
 ### Claude Vision (`ANALYZER=claude`, default)
 
-Sends the screenshot to Claude with a structured prompt. Returns formatted text. Costs are logged to `api_costs.jsonl`.
+Sends the screenshot to Claude with a structured JSON schema prompt. Returns structured match data (map, mode, queue type, result, all player stats, hero-specific stats). Costs are logged to `api_costs.jsonl`.
 
 - Model: configurable via `ANTHROPIC_MODEL` (default: `claude-sonnet-4-6`)
-- Outputs `QUEUE TYPE:` line (COMPETITIVE or QUICKPLAY)
+- Uses JSON Schema output for reliable structured extraction
+- If `OVERWATCH_USERNAME` is set, the model is instructed to always identify that player as `is_self`
 
 ### EasyOCR (`ANALYZER=ocr`)
 
@@ -142,6 +151,10 @@ Fully local analysis using EasyOCR + OpenCV. No API calls, no cost.
 - HSV brightness analysis to detect OW2's dim "0" values vs. bright non-zero stats
 - Region-based extraction with normalized coordinates for resolution independence
 - Detects competitive vs quickplay from "- COMPETITIVE" suffix in mode header
+
+## MCP integration
+
+With `--mcp`, structured match data (map, mode, players, stats, hero details) is uploaded to an MCP server via Streamable HTTP after each analysis. Requires `MCP_URL` in `.env`. Only works with the Claude backend (structured JSON output).
 
 ## Telegram integration
 
@@ -169,6 +182,8 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `AUDIO_CONFIRM_HOPS` | `2` | Consecutive hops required to confirm |
 | `AUDIO_MATCH_MARGIN` | `0.10` | Winner must beat runner-up by this |
 | `AUDIO_MIN_RMS` | `0.0005` | Minimum RMS energy to attempt matching |
+| `OVERWATCH_USERNAME` | -- | Your BattleTag (improves self-player detection) |
+| `MCP_URL` | -- | MCP server URL for match data upload |
 
 ## Project structure
 
@@ -187,6 +202,7 @@ overwatchlooker/
   display.py                     # Formatting, logging, safe stdout for pythonw
   notification.py                # Clipboard, tkinter overlay, audio chime
   telegram.py                    # Telethon message sending
+  mcp_client.py                  # MCP server client (Streamable HTTP)
 refs/                            # Audio reference clips (victory.wav, defeat.wav)
 cache/                           # Cached analysis results
 logs/                            # Timestamped log files

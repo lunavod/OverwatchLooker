@@ -32,3 +32,9 @@ SUBTITLE_POLL_INTERVAL: float = 1.0  # seconds between subtitle region checks
 TELEGRAM_API_ID: str = os.environ.get("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH: str = os.environ.get("TELEGRAM_API_HASH", "")
 TELEGRAM_CHANNEL: str = os.environ.get("TELEGRAM_CHANNEL", "")
+
+# Player identity
+OVERWATCH_USERNAME: str = os.environ.get("OVERWATCH_USERNAME", "")
+
+# MCP server
+MCP_URL: str = os.environ.get("MCP_URL", "")

@@ -24,6 +24,11 @@ def main():
         help="Send results to Telegram instead of copying to clipboard",
     )
     parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Upload match results to the MCP server",
+    )
+    parser.add_argument(
         "--audio",
         action="store_true",
         help="Use audio-based detection instead of subtitle OCR (requires proc-tap)",
@@ -45,6 +50,15 @@ def main():
         help="Hint that the match result is DEFEAT",
     )
     args = parser.parse_args()
+
+    features = [f"analyzer={ANALYZER}"]
+    if args.tg:
+        features.append("telegram")
+    if args.mcp:
+        features.append("mcp")
+    if args.audio:
+        features.append("audio")
+    print_status(f"OverwatchLooker started ({', '.join(features)})")
 
     if args.image:
         path = Path(args.image)
@@ -73,21 +87,39 @@ def main():
             result = analyze_screenshot(png_bytes, audio_result=audio_result)
             cache.put(png_bytes, ANALYZER, result)
 
-        if result.startswith("NOT_OW2_TAB"):
-            print_error("Image does not appear to be an OW2 Tab screen.")
+        # Convert dict (claude structured output) to display text
+        if isinstance(result, dict):
+            if result.get("not_ow2_tab"):
+                print_error("Image does not appear to be an OW2 Tab screen.")
+                sys.exit(1)
+            from overwatchlooker.analyzer import format_match
+            display_text = format_match(result)
         else:
-            formatted = print_analysis(result)
-            if args.tg:
-                from overwatchlooker.telegram import send_message
-                if send_message(formatted):
-                    show_notification("OverwatchLooker", "Analysis sent to Telegram.")
-                else:
-                    print_error("Failed to send to Telegram.")
+            # Legacy str result (ocr backend or old cache)
+            if result.startswith("NOT_OW2_TAB"):
+                print_error("Image does not appear to be an OW2 Tab screen.")
+                sys.exit(1)
+            display_text = result
+
+        formatted = print_analysis(display_text)
+        if args.mcp and isinstance(result, dict):
+            from overwatchlooker.mcp_client import submit_match
+            try:
+                submit_match(result)
+                print_status("Uploaded to MCP.")
+            except Exception as e:
+                print_error(f"MCP upload failed: {e}")
+        if args.tg:
+            from overwatchlooker.telegram import send_message
+            if send_message(formatted):
+                show_notification("OverwatchLooker", "Analysis sent to Telegram.")
             else:
-                copy_to_clipboard(formatted)
-                show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
+                print_error("Failed to send to Telegram.")
+        else:
+            copy_to_clipboard(formatted)
+            show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
     else:
-        app = App(use_telegram=args.tg, use_audio=args.audio)
+        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_audio=args.audio)
         app.run()
 
 

@@ -26,4 +26,10 @@ logs/
 *.jsonl
 *.mp4
 *.session
+*.zip
 cache/
+
+# Batch API artifacts
+batch_out/
+batch_*.json
+batch_*.py

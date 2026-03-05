@@ -467,54 +467,95 @@ def _verify_scoreboard(img: np.ndarray) -> bool:
     return blue_ok and red_ok
 
 
-def _format_output(data: MatchData) -> str:
-    lines = [
-        f"MAP: {data.map_name}",
-        f"TIME: {data.time}",
-        f"MODE: {data.mode}",
-        f"QUEUE: {data.queue_type}",
-        f"RESULT: {data.result}",
-        "",
-        "=== YOUR TEAM ===",
-        "Role | Player | E | A | D | DMG | H | MIT",
-    ]
-    for p in data.your_team:
-        lines.append(
-            f"{p.role} | {p.name} | {p.elims} | {p.assists} | {p.deaths} | "
-            f"{p.damage} | {p.healing} | {p.mitigation}"
-        )
-    lines.extend(["", "=== ENEMY TEAM ===", "Role | Player | E | A | D | DMG | H | MIT"])
-    for p in data.enemy_team:
-        lines.append(
-            f"{p.role} | {p.name} | {p.elims} | {p.assists} | {p.deaths} | "
-            f"{p.damage} | {p.healing} | {p.mitigation}"
-        )
+def _stat_to_int(val: str) -> int | None:
+    """Convert an OCR stat string like '8,990' or '-' to an integer or None."""
+    if not val or val == "-":
+        return None
+    cleaned = val.replace(",", "")
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
 
-    if data.hero_stats:
-        hs = data.hero_stats
-        lines.append("")
-        lines.append("HERO STATS:")
-        stat_str = "; ".join(hs.stats)
-        if hs.featured_stat:
-            lines.append(f"{hs.hero_name} - {hs.featured_stat}; {stat_str}")
+
+def _player_to_dict(player: PlayerStats, team: str) -> dict:
+    """Convert a PlayerStats to the schema dict."""
+    return {
+        "team": team,
+        "role": player.role,
+        "player_name": player.name,
+        "eliminations": _stat_to_int(player.elims),
+        "assists": _stat_to_int(player.assists),
+        "deaths": _stat_to_int(player.deaths),
+        "damage": _stat_to_int(player.damage),
+        "healing": _stat_to_int(player.healing),
+        "mitigation": _stat_to_int(player.mitigation),
+        "is_self": False,
+        "hero": None,
+    }
+
+
+def _hero_to_dict(hero: HeroStats) -> dict:
+    """Convert a HeroStats to the schema hero dict."""
+    stats = []
+    if hero.featured_stat:
+        # Featured stat is "Label: Value" format
+        if ": " in hero.featured_stat:
+            label, value = hero.featured_stat.rsplit(": ", 1)
+            stats.append({"label": label, "value": value, "is_featured": True})
         else:
-            lines.append(f"{hs.hero_name} - {stat_str}")
+            stats.append({"label": hero.featured_stat, "value": "", "is_featured": True})
+    for s in hero.stats:
+        if ": " in s:
+            label, value = s.rsplit(": ", 1)
+            stats.append({"label": label, "value": value, "is_featured": False})
+        else:
+            stats.append({"label": s, "value": "", "is_featured": False})
+    return {"hero_name": hero.hero_name, "stats": stats}
 
-    return "\n".join(lines)
+
+def _to_match_dict(data: MatchData) -> dict:
+    """Convert MatchData to a dict matching the structured output schema."""
+    players = []
+    for p in data.your_team:
+        players.append(_player_to_dict(p, "ALLY"))
+    for p in data.enemy_team:
+        players.append(_player_to_dict(p, "ENEMY"))
+
+    # Attach hero stats to the first ally player (self-player detection
+    # not available in OCR mode; hero panel is always for the selected player)
+    if data.hero_stats and players:
+        for p in players:
+            if p["team"] == "ALLY":
+                p["is_self"] = True
+                p["hero"] = _hero_to_dict(data.hero_stats)
+                break
+
+    return {
+        "not_ow2_tab": False,
+        "map_name": data.map_name,
+        "duration": data.time,
+        "mode": data.mode.upper() if data.mode else "",
+        "queue_type": data.queue_type,
+        "result": data.result,
+        "players": players,
+    }
 
 
-def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> str:
+def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dict:
     """Analyze an OW2 scoreboard screenshot using EasyOCR."""
     from overwatchlooker.display import print_status
 
     img = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
-        return "NOT_OW2_TAB: Could not decode image."
+        return {"not_ow2_tab": True, "map_name": "", "duration": "", "mode": "",
+                "queue_type": "", "result": "UNKNOWN", "players": []}
 
     print_status(f"Image size: {img.shape[1]}x{img.shape[0]}")
 
     if not _verify_scoreboard(img):
-        return "NOT_OW2_TAB: This does not appear to be an Overwatch 2 scoreboard screenshot."
+        return {"not_ow2_tab": True, "map_name": "", "duration": "", "mode": "",
+                "queue_type": "", "result": "UNKNOWN", "players": []}
 
     print_status("Extracting map header...")
     mode, map_name, time_str, queue_type = _extract_map_header(img)
@@ -533,7 +574,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> str
     print_status("Extracting hero stats...")
     hero_stats = _extract_hero_stats(img)
 
-    return _format_output(
+    return _to_match_dict(
         MatchData(
             map_name=map_name,
             time=time_str,

@@ -112,13 +112,13 @@ class SubtitleListener:
         if white_count < _WHITE_PIXEL_THRESHOLD:
             return
 
-        _logger.info(f"Subtitle: {white_count} white pixels detected, running OCR...")
+        _logger.debug(f"Subtitle: {white_count} white pixels detected, running OCR...")
 
         # Stage 2: OCR confirmation
         reader = _get_reader()
         results = reader.readtext(img, detail=0)
         text = " ".join(results).lower()
-        _logger.info(f"Subtitle OCR text: {text!r}")
+        _logger.debug(f"Subtitle OCR text: {text!r}")
 
         # Match exact Athena subtitle lines only.
         # The game shows "[ATHENA] Victory." and "[ATHENA] Defeat."
