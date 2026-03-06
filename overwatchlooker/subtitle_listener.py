@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 import cv2
 import numpy as np
+import pytesseract
 
 from overwatchlooker.hotkey import _get_foreground_exe
 from overwatchlooker.config import (
@@ -18,32 +19,20 @@ from overwatchlooker.config import (
 
 _logger = logging.getLogger("overwatchlooker")
 
-# Subtitle region: bottom 10% of screen, center 20%
-_REGION_Y_START = 0.90
+# Point pytesseract at the Windows install path
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Subtitle region: bottom 12% of screen, center 60%
+_REGION_Y_START = 0.88
 _REGION_Y_END = 1.00
-_REGION_X_START = 0.40
-_REGION_X_END = 0.60
+_REGION_X_START = 0.20
+_REGION_X_END = 0.80
 
-# HSV thresholds for white text pixels (high value, low saturation)
-_WHITE_V_MIN = 200
-_WHITE_S_MAX = 30
-_WHITE_PIXEL_THRESHOLD = 500  # minimum white pixels to trigger OCR
-
-# Lazy-loaded EasyOCR reader singleton
-_reader = None
-_reader_lock = threading.Lock()
-
-
-def _get_reader():
-    global _reader
-    if _reader is None:
-        with _reader_lock:
-            if _reader is None:
-                import easyocr
-                _logger.info("Loading EasyOCR reader for subtitle detection...")
-                _reader = easyocr.Reader(["en"], gpu=True)
-                _logger.info("EasyOCR reader loaded.")
-    return _reader
+# HSV thresholds for bright/saturated text pixels
+_VALUE_MIN = 180          # minimum brightness for any text color
+_SAT_MAX_WHITE = 30       # max saturation for white text
+_SAT_MIN_COLOR = 80       # min saturation for colored text (red/blue/green)
+_PIXEL_THRESHOLD = 500    # minimum text pixels to trigger OCR
 
 
 class SubtitleListener:
@@ -104,23 +93,31 @@ class SubtitleListener:
         grab = sct.grab(region)
         img = np.array(grab)[:, :, :3]  # drop alpha, keep BGR
 
-        # Stage 1: fast white pixel check via HSV
+        # Stage 1: fast pixel check — detect bright white OR saturated color text
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        white_mask = (hsv[:, :, 2] >= _WHITE_V_MIN) & (hsv[:, :, 1] <= _WHITE_S_MAX)
-        white_count = int(np.count_nonzero(white_mask))
+        bright = hsv[:, :, 2] >= _VALUE_MIN
+        white_mask = bright & (hsv[:, :, 1] <= _SAT_MAX_WHITE)
+        color_mask = bright & (hsv[:, :, 1] >= _SAT_MIN_COLOR)
+        text_mask = white_mask | color_mask
+        text_count = int(np.count_nonzero(text_mask))
 
-        if white_count < _WHITE_PIXEL_THRESHOLD:
+        if text_count < _PIXEL_THRESHOLD:
             return
 
-        _logger.debug(f"Subtitle: {white_count} white pixels detected, running OCR...")
+        _logger.debug(f"Subtitle: {text_count} text pixels detected, running OCR...")
 
-        # Stage 2: OCR confirmation
-        reader = _get_reader()
-        results = reader.readtext(img, detail=0)
-        text = " ".join(results).lower()
+        # Stage 2: binarize using the text mask and run Tesseract
+        binary = np.zeros(img.shape[:2], dtype=np.uint8)
+        binary[text_mask] = 255
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        binary = cv2.dilate(binary, kernel, iterations=1)
+        binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
+
+        text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
         _logger.debug(f"Subtitle OCR text: {text!r}")
 
-        # Match exact Athena subtitle lines only.
+        # Match Athena subtitle lines.
         # The game shows "[ATHENA] Victory." and "[ATHENA] Defeat."
         # OCR may drop brackets/punctuation, so we fuzzy-match the pattern.
         result = None

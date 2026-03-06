@@ -21,6 +21,7 @@ dependencies = [
     "litellm>=1.81.14",
     "telethon>=1.37.0",
     "questionary>=2.1.1",
+    "pytesseract>=0.3.13",
 ]
 
 [tool.uv.sources]
