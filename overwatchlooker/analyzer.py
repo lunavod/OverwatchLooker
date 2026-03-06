@@ -73,7 +73,11 @@ MATCH_SCHEMA = {
                         },
                         "player_name": {
                             "type": "string",
-                            "description": "Player BattleTag exactly as shown.",
+                            "description": "Player BattleTag in UPPERCASE exactly as shown on screen.",
+                        },
+                        "title": {
+                            "type": ["string", "null"],
+                            "description": "Title shown below the player name in Title Case (e.g. 'Stalwart Hero', 'Medic', 'Data Broker'). null if not visible.",
                         },
                         "eliminations": {
                             "type": ["integer", "null"],
@@ -140,7 +144,7 @@ MATCH_SCHEMA = {
                         },
                     },
                     "required": [
-                        "team", "role", "player_name",
+                        "team", "role", "player_name", "title",
                         "eliminations", "assists", "deaths",
                         "damage", "healing", "mitigation",
                         "is_self", "hero",
@@ -181,8 +185,9 @@ a match). Extract all visible match data into the JSON schema provided.
 
 Scoreboard layout (left to right per row): role icon (shield = TANK, \
 bullets/crosshair = DPS, plus/cross = SUPPORT), hero portrait, ult charge %, \
-player name (BattleTag), up to two perk icons, then stat columns: \
-E (eliminations), A (assists), D (deaths), DMG (damage dealt), \
+player name (BattleTag, ALWAYS IN UPPERCASE) with an optional title shown \
+in smaller text below it in Title Case (e.g. "Stalwart Hero", "Medic", \
+"Data Broker"), up to two perk icons, then stat columns: E (eliminations), A (assists), D (deaths), DMG (damage dealt), \
 H (healing done), MIT (damage mitigated/blocked).
 
 Rules:
@@ -288,8 +293,11 @@ def format_match(data: dict) -> str:
         for p in team_players:
             def _fmt(v):
                 return "-" if v is None else f"{v:,}"
+            name = p['player_name']
+            if p.get('title'):
+                name += f" ({p['title']})"
             lines.append(
-                f"{p['role']} | {p['player_name']} | "
+                f"{p['role']} | {name} | "
                 f"{_fmt(p['eliminations'])} | {_fmt(p['assists'])} | {_fmt(p['deaths'])} | "
                 f"{_fmt(p['damage'])} | {_fmt(p['healing'])} | {_fmt(p['mitigation'])}"
             )

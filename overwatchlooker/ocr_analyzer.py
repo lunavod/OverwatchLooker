@@ -484,6 +484,7 @@ def _player_to_dict(player: PlayerStats, team: str) -> dict:
         "team": team,
         "role": player.role,
         "player_name": player.name,
+        "title": None,
         "eliminations": _stat_to_int(player.elims),
         "assists": _stat_to_int(player.assists),
         "deaths": _stat_to_int(player.deaths),
