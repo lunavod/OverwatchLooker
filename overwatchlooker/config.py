@@ -38,3 +38,4 @@ OVERWATCH_USERNAME: str = os.environ.get("OVERWATCH_USERNAME", "")
 
 # MCP server
 MCP_URL: str = os.environ.get("MCP_URL", "")
+MCP_SOURCE: str = os.environ.get("MCP_SOURCE", "looker")

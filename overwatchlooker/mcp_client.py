@@ -1,15 +1,17 @@
 """Lightweight MCP client for submitting matches via Streamable HTTP."""
 
+import base64
+import datetime
 import logging
 
 import httpx
 
-from overwatchlooker.config import MCP_URL
+from overwatchlooker.config import MCP_SOURCE, MCP_URL
 
 _logger = logging.getLogger("overwatchlooker")
 
 
-def submit_match(data: dict) -> dict:
+def submit_match(data: dict, png_bytes: bytes | None = None, is_backfill: bool = False) -> dict:
     """Submit a match to the MCP server. Returns the tool result."""
     if not MCP_URL:
         raise RuntimeError("MCP_URL not set in .env")
@@ -24,7 +26,16 @@ def submit_match(data: dict) -> dict:
         "queue_type": data["queue_type"],
         "result": data["result"],
         "players": data["players"],
+        "source": MCP_SOURCE,
+        "played_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "is_backfill": is_backfill,
     }
+
+    if png_bytes:
+        args["screenshot_uploads"] = [{
+            "data": base64.standard_b64encode(png_bytes).decode("utf-8"),
+            "filename": "screenshot.png",
+        }]
 
     payload = {
         "jsonrpc": "2.0",

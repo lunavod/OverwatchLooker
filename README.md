@@ -78,6 +78,7 @@ Analyzes a saved screenshot directly. Results are cached on disk (`cache/`) and 
 | `--mcp` | Upload structured match data to the MCP server |
 | `--audio` | Use audio-based victory/defeat detection (requires proc-tap) |
 | `--clean` | Bypass disk cache and re-analyze from scratch |
+| `--backfill` | Mark match as backfilled when uploading to MCP |
 | `--win` | Hint that the match result is VICTORY |
 | `--loss` | Hint that the match result is DEFEAT |
 
@@ -184,6 +185,7 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `AUDIO_MIN_RMS` | `0.0005` | Minimum RMS energy to attempt matching |
 | `OVERWATCH_USERNAME` | -- | Your BattleTag (improves self-player detection) |
 | `MCP_URL` | -- | MCP server URL for match data upload |
+| `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
 
 ## Project structure
 

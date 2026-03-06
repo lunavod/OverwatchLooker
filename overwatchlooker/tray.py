@@ -159,7 +159,7 @@ class App:
                 if self._use_mcp and isinstance(result, dict):
                     from overwatchlooker.mcp_client import submit_match
                     try:
-                        submit_match(result)
+                        submit_match(result, png_bytes=png_bytes)
                         print_status("Uploaded to MCP.")
                     except Exception as e:
                         print_error(f"MCP upload failed: {e}")

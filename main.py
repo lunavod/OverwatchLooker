@@ -38,6 +38,11 @@ def main():
         action="store_true",
         help="Bypass cache and re-analyze from scratch",
     )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Mark match as backfilled when uploading to MCP",
+    )
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -105,7 +110,7 @@ def main():
         if args.mcp and isinstance(result, dict):
             from overwatchlooker.mcp_client import submit_match
             try:
-                submit_match(result)
+                submit_match(result, png_bytes=png_bytes, is_backfill=args.backfill)
                 print_status("Uploaded to MCP.")
             except Exception as e:
                 print_error(f"MCP upload failed: {e}")
