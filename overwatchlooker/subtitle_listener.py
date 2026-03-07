@@ -48,6 +48,12 @@ class SubtitleListener:
         self._transcript = transcript
         self._transcript_file = None
         self._last_lines: set[str] = set()  # lines from the previous OCR pass
+        self._hero_map: dict[str, str] = {}  # UPPERCASE username -> hero name (Title Case)
+
+    @property
+    def hero_map(self) -> dict[str, str]:
+        """Username -> hero name mapping from subtitle OCR. Usernames are UPPERCASE."""
+        return dict(self._hero_map)
 
     def start(self) -> None:
         if self._running:
@@ -133,6 +139,13 @@ class SubtitleListener:
 
         text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
         _logger.debug(f"Subtitle OCR text: {text!r}")
+
+        # Extract username -> hero mappings from [USERNAME (HERO)] lines
+        for m in re.finditer(r"\[(\w+)\s+\(([^)]+)\)\]", text):
+            username = m.group(1).upper()
+            hero = m.group(2).strip().title()
+            if username != "ATHENA":
+                self._hero_map[username] = hero
 
         # Write new subtitle lines to transcript (deduplicated against previous pass)
         if self._transcript_file and text:

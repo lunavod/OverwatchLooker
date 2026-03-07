@@ -104,10 +104,15 @@ class App:
                 return
             self._analyzing = True
 
-        thread = threading.Thread(target=self._run_analysis, args=(result,), daemon=True)
+        # Grab hero map from subtitle listener before starting analysis thread
+        hero_map = {}
+        if hasattr(self._detector, "hero_map"):
+            hero_map = self._detector.hero_map
+
+        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map), daemon=True)
         thread.start()
 
-    def _run_analysis(self, detection_result: str) -> None:
+    def _run_analysis(self, detection_result: str, hero_map: dict[str, str] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
             print_status(f"Detected: {detection_result}. "
@@ -149,7 +154,7 @@ class App:
                         print_status("Analyzer rejected screenshot as not OW2 Tab.")
                         continue
                     from overwatchlooker.analyzer import format_match
-                    display_text = format_match(result)
+                    display_text = format_match(result, hero_map=hero_map)
                 else:
                     if result.startswith("NOT_OW2_TAB"):
                         print_status("Analyzer rejected screenshot as not OW2 Tab.")
@@ -160,7 +165,7 @@ class App:
                 if self._use_mcp and isinstance(result, dict):
                     from overwatchlooker.mcp_client import submit_match
                     try:
-                        submit_match(result, png_bytes=png_bytes)
+                        submit_match(result, png_bytes=png_bytes, hero_map=hero_map)
                         print_status("Uploaded to MCP.")
                     except Exception as e:
                         print_error(f"MCP upload failed: {e}")

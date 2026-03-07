@@ -276,8 +276,12 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
     return json.loads(text)
 
 
-def format_match(data: dict) -> str:
-    """Format a structured match dict into the display text."""
+def format_match(data: dict, hero_map: dict[str, str] | None = None) -> str:
+    """Format a structured match dict into the display text.
+
+    Args:
+        hero_map: Optional UPPERCASE username -> hero name mapping from subtitle OCR.
+    """
     lines = []
     lines.append(f"MAP: {data['map_name']}")
     lines.append(f"TIME: {data['duration']}")
@@ -294,6 +298,10 @@ def format_match(data: dict) -> str:
             def _fmt(v):
                 return "-" if v is None else f"{v:,}"
             name = p['player_name']
+            # Show hero from subtitle OCR if available
+            subtitle_hero = (hero_map or {}).get(p['player_name'])
+            if subtitle_hero:
+                name += f" [{subtitle_hero}]"
             if p.get('title'):
                 name += f" ({p['title']})"
             lines.append(
