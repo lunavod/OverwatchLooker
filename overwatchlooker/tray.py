@@ -37,7 +37,7 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 
 class App:
-    def __init__(self, use_telegram: bool = False, use_mcp: bool = False, use_audio: bool = False):
+    def __init__(self, use_telegram: bool = False, use_mcp: bool = False, use_audio: bool = False, use_transcript: bool = False):
         self._active = False
         self._hotkey: HotkeyListener | None = None
         self._detector = None  # SubtitleListener or AudioListener
@@ -49,6 +49,7 @@ class App:
         self._use_telegram = use_telegram
         self._use_mcp = use_mcp
         self._use_audio = use_audio
+        self._use_transcript = use_transcript
 
     def _on_tab_press(self) -> None:
         """Tab press: capture screenshots while held, retrying until valid."""
@@ -216,7 +217,7 @@ class App:
             detect_mode = "audio"
         else:
             from overwatchlooker.subtitle_listener import SubtitleListener
-            self._detector = SubtitleListener(on_match=self._on_detection)
+            self._detector = SubtitleListener(on_match=self._on_detection, transcript=self._use_transcript)
             detect_mode = "subtitle"
         self._detector.start()
         print_status(f"Listening (analyzer={ANALYZER}, detection={detect_mode}). Tab=screenshot.")

@@ -14,9 +14,9 @@ _SAT_MIN_COLOR = 80
 
 # Wider region to avoid clipping text
 _REGION_Y_START = 0.88
-_REGION_Y_END = 1.00
-_REGION_X_START = 0.20
-_REGION_X_END = 0.80
+_REGION_Y_END = 0.98
+_REGION_X_START = 0.30
+_REGION_X_END = 0.70
 
 if len(sys.argv) < 2:
     print(f"Usage: {sys.argv[0]} <screenshot_path>")

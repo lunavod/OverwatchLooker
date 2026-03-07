@@ -1,10 +1,12 @@
 """Visual subtitle-based VICTORY/DEFEAT detection via screen capture + OCR."""
 
+import datetime
 import logging
 import re
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -22,11 +24,11 @@ _logger = logging.getLogger("overwatchlooker")
 # Point pytesseract at the Windows install path
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# Subtitle region: bottom 12% of screen, center 60%
+# Subtitle region: bottom of screen, above HUD ability bar
 _REGION_Y_START = 0.88
-_REGION_Y_END = 1.00
-_REGION_X_START = 0.20
-_REGION_X_END = 0.80
+_REGION_Y_END = 0.98
+_REGION_X_START = 0.30
+_REGION_X_END = 0.70
 
 # HSV thresholds for bright/saturated text pixels
 _VALUE_MIN = 180          # minimum brightness for any text color
@@ -38,11 +40,14 @@ _PIXEL_THRESHOLD = 500    # minimum text pixels to trigger OCR
 class SubtitleListener:
     """Monitors screen for VICTORY/DEFEAT subtitle text."""
 
-    def __init__(self, on_match: Callable[[str], None]):
+    def __init__(self, on_match: Callable[[str], None], transcript: bool = False):
         self._on_match = on_match
         self._running = False
         self._thread: threading.Thread | None = None
         self._last_trigger_time = 0.0
+        self._transcript = transcript
+        self._transcript_file = None
+        self._last_lines: set[str] = set()  # lines from the previous OCR pass
 
     def start(self) -> None:
         if self._running:
@@ -60,15 +65,27 @@ class SubtitleListener:
     def _run(self) -> None:
         import mss
 
+        if self._transcript:
+            transcript_dir = Path("transcripts")
+            transcript_dir.mkdir(exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            self._transcript_file = open(transcript_dir / f"{ts}.txt", "a", encoding="utf-8")
+            _logger.info(f"Transcript logging to transcripts/{ts}.txt")
+
         _logger.info("Subtitle listener started.")
 
-        with mss.mss() as sct:
-            while self._running:
-                try:
-                    self._poll(sct)
-                except Exception as e:
-                    _logger.warning(f"Subtitle poll error: {e}")
-                time.sleep(SUBTITLE_POLL_INTERVAL)
+        try:
+            with mss.mss() as sct:
+                while self._running:
+                    try:
+                        self._poll(sct)
+                    except Exception as e:
+                        _logger.warning(f"Subtitle poll error: {e}")
+                    time.sleep(SUBTITLE_POLL_INTERVAL)
+        finally:
+            if self._transcript_file:
+                self._transcript_file.close()
+                self._transcript_file = None
 
         _logger.info("Subtitle listener stopped.")
 
@@ -116,6 +133,24 @@ class SubtitleListener:
 
         text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
         _logger.debug(f"Subtitle OCR text: {text!r}")
+
+        # Write new subtitle lines to transcript (deduplicated against previous pass)
+        if self._transcript_file and text:
+            # Only keep lines that look like subtitles: [SPEAKER] text
+            current_lines = set()
+            for ln in text.splitlines():
+                ln = ln.strip()
+                if ln and re.match(r"\[.+\]", ln):
+                    # Strip trailing noise (random chars after the real text)
+                    clean = re.sub(r"\s+[^\w\s()\[\]!?.,']{1,3}(\s+[^\w\s()\[\]!?.,']{1,3})*\s*$", "", ln)
+                    current_lines.add(clean)
+            new_lines = current_lines - self._last_lines
+            self._last_lines = current_lines
+            if new_lines:
+                ts = datetime.datetime.now().strftime("%H:%M:%S")
+                for ln in sorted(new_lines):
+                    self._transcript_file.write(f"[{ts}] {ln}\n")
+                self._transcript_file.flush()
 
         # Match Athena subtitle lines.
         # The game shows "[ATHENA] Victory." and "[ATHENA] Defeat."

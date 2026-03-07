@@ -23,6 +23,7 @@ wheels/
 # Logs
 *.log
 logs/
+transcripts/
 *.jsonl
 *.mp4
 *.session

@@ -43,6 +43,11 @@ def main():
         action="store_true",
         help="Mark match as backfilled when uploading to MCP",
     )
+    parser.add_argument(
+        "--transcript",
+        action="store_true",
+        help="Log subtitle OCR results to transcripts/ folder",
+    )
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -63,6 +68,8 @@ def main():
         features.append("mcp")
     if args.audio:
         features.append("audio")
+    if args.transcript:
+        features.append("transcript")
     print_status(f"OverwatchLooker started ({', '.join(features)})")
 
     if args.image:
@@ -124,7 +131,7 @@ def main():
             copy_to_clipboard(formatted)
             show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
     else:
-        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_audio=args.audio)
+        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_audio=args.audio, use_transcript=args.transcript)
         app.run()
 
 
