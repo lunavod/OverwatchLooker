@@ -12,9 +12,15 @@ from PIL import Image
 
 from overwatchlooker.config import MONITOR_INDEX, SCREENSHOT_MAX_AGE_SECONDS
 
-MAX_PNG_SIZE = 4_000_000  # 4MB limit for API payload
-MAX_LONG_EDGE = 1568  # optimal image size for vision models
 CSIDL_MYPICTURES = 0x0027
+
+# Per-backend optimal long-edge sizes (images larger than this get downscaled
+# server-side anyway, so sending bigger just wastes bandwidth/tokens).
+ANALYZER_MAX_EDGE = {
+    "anthropic": 1568,
+    "codex": None,  # subscription-based, send full res for best OCR accuracy
+    "ocr": None,  # no resize — OCR works on raw pixels
+}
 
 
 def _get_pictures_folder() -> Path:
@@ -37,11 +43,18 @@ def save_screenshot(png_bytes: bytes) -> Path:
     return path
 
 
-def _resize_if_needed(png_bytes: bytes) -> bytes:
-    if len(png_bytes) <= MAX_PNG_SIZE:
+def resize_for_analyzer(png_bytes: bytes, analyzer: str) -> bytes:
+    """Downscale PNG bytes to the optimal size for the given analyzer backend.
+
+    Returns the original bytes unchanged if no resize is needed.
+    """
+    max_edge = ANALYZER_MAX_EDGE.get(analyzer)
+    if max_edge is None:
         return png_bytes
     img = Image.open(io.BytesIO(png_bytes))
-    img.thumbnail((MAX_LONG_EDGE, MAX_LONG_EDGE), Image.LANCZOS)
+    if max(img.size) <= max_edge:
+        return png_bytes
+    img.thumbnail((max_edge, max_edge), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -80,9 +93,8 @@ def is_ow2_tab_screen(png_bytes: bytes) -> bool:
 
 
 def capture_monitor() -> bytes:
-    """Capture the primary monitor and return PNG bytes."""
+    """Capture the primary monitor and return full-resolution PNG bytes."""
     with mss.mss() as sct:
         monitor = sct.monitors[MONITOR_INDEX]
         img = sct.grab(monitor)
-        png_bytes = mss.tools.to_png(img.rgb, img.size)
-        return _resize_if_needed(png_bytes)
+        return mss.tools.to_png(img.rgb, img.size)

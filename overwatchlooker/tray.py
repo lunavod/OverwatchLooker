@@ -6,7 +6,7 @@ import traceback
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 
-from overwatchlooker.config import ANALYZER, ANTHROPIC_API_KEY, SCREENSHOT_MAX_AGE_SECONDS
+from overwatchlooker.config import ANALYZER, SCREENSHOT_MAX_AGE_SECONDS
 from overwatchlooker.display import print_analysis, print_error, print_status
 
 _logger = logging.getLogger("overwatchlooker")
@@ -142,10 +142,8 @@ class App:
 
                 print_status(f"Analyzing {filename} ({len(png_bytes)} bytes, "
                              f"{age:.0f}s old) with {ANALYZER} backend...")
-                if ANALYZER == "claude":
-                    from overwatchlooker.analyzer import analyze_screenshot
-                else:
-                    from overwatchlooker.ocr_analyzer import analyze_screenshot
+                from overwatchlooker.analyzers import get_analyze_screenshot
+                analyze_screenshot = get_analyze_screenshot()
                 result = analyze_screenshot(png_bytes, audio_result=detection_result)
 
                 # Handle dict (claude structured output) vs str (ocr)
@@ -153,7 +151,7 @@ class App:
                     if result.get("not_ow2_tab"):
                         print_status("Analyzer rejected screenshot as not OW2 Tab.")
                         continue
-                    from overwatchlooker.analyzer import format_match
+                    from overwatchlooker.analyzers.common import format_match
                     display_text = format_match(result, hero_map=hero_map)
                 else:
                     if result.startswith("NOT_OW2_TAB"):
@@ -199,10 +197,12 @@ class App:
         if self._active:
             return
 
-        if ANALYZER == "claude" and not ANTHROPIC_API_KEY:
-            print_error("ANALYZER=claude but ANTHROPIC_API_KEY is not set. "
-                        "Set it in .env or use ANALYZER=ocr.")
-            return
+        if ANALYZER == "anthropic":
+            from overwatchlooker.config import ANTHROPIC_API_KEY
+            if not ANTHROPIC_API_KEY:
+                print_error("ANALYZER=anthropic but ANTHROPIC_API_KEY is not set. "
+                            "Set it in .env or use a different analyzer.")
+                return
 
         self._active = True
         if self._use_telegram:

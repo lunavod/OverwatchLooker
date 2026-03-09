@@ -19,6 +19,12 @@ def main():
         help="Path to an image file to analyze instead of listening for hotkeys",
     )
     parser.add_argument(
+        "--analyzer",
+        choices=["anthropic", "codex", "ocr"],
+        default=None,
+        help="Analyzer backend (overrides ANALYZER env var)",
+    )
+    parser.add_argument(
         "--tg",
         action="store_true",
         help="Send results to Telegram instead of copying to clipboard",
@@ -61,7 +67,13 @@ def main():
     )
     args = parser.parse_args()
 
-    features = [f"analyzer={ANALYZER}"]
+    # CLI --analyzer overrides env var
+    analyzer = args.analyzer or ANALYZER
+    if args.analyzer:
+        import overwatchlooker.config as cfg
+        cfg.ANALYZER = args.analyzer
+
+    features = [f"analyzer={analyzer}"]
     if args.tg:
         features.append("telegram")
     if args.mcp:
@@ -86,25 +98,23 @@ def main():
 
         result = None
         if not args.clean:
-            result = cache.get(png_bytes, ANALYZER)
+            result = cache.get(png_bytes, analyzer)
             if result:
                 print_status("Using cached result.")
 
         if result is None:
-            if ANALYZER == "claude":
-                from overwatchlooker.analyzer import analyze_screenshot
-            else:
-                from overwatchlooker.ocr_analyzer import analyze_screenshot
+            from overwatchlooker.analyzers import get_analyze_screenshot
+            analyze_screenshot = get_analyze_screenshot()
             audio_result = "VICTORY" if args.win else "DEFEAT" if args.loss else None
             result = analyze_screenshot(png_bytes, audio_result=audio_result)
-            cache.put(png_bytes, ANALYZER, result)
+            cache.put(png_bytes, analyzer, result)
 
-        # Convert dict (claude structured output) to display text
+        # Convert dict (structured output) to display text
         if isinstance(result, dict):
             if result.get("not_ow2_tab"):
                 print_error("Image does not appear to be an OW2 Tab screen.")
                 sys.exit(1)
-            from overwatchlooker.analyzer import format_match
+            from overwatchlooker.analyzers.common import format_match
             display_text = format_match(result)
         else:
             # Legacy str result (ocr backend or old cache)

@@ -254,6 +254,23 @@ wheels = [
 ]
 
 [[package]]
+name = "codex-open-client"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/42/dc21d7c84e08ae0c3b2412b12031050e8d2a161060017009a9de63214fc4/codex_open_client-0.2.0.tar.gz", hash = "sha256:7eb33ab38d0fc5d35c07a6da03cc8ac0a7ad27a6ba306d412271e3500d411ae9", size = 108449, upload-time = "2026-03-09T04:26:04.125Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/6c/38ebf17d7549dc28b2350ae491b7ae5195b239a5c8a3de25edae57041b2f/codex_open_client-0.2.0-py3-none-any.whl", hash = "sha256:15313aa909fc24e18a67ef9770e5361e8f4874a9ab842ad69732aae9d625709f", size = 24259, upload-time = "2026-03-09T04:26:02.65Z" },
+]
+
+[package.optional-dependencies]
+pydantic = [
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://download.pytorch.org/whl/cu124" }
@@ -1156,6 +1173,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "codex-open-client", extra = ["pydantic"] },
     { name = "easyocr" },
     { name = "litellm" },
     { name = "mss" },
@@ -1177,6 +1195,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.83.0" },
+    { name = "codex-open-client", extras = ["pydantic"], specifier = ">=0.1.0" },
     { name = "easyocr", specifier = ">=1.7.0" },
     { name = "litellm", specifier = ">=1.81.14" },
     { name = "mss", specifier = ">=10.1.0" },
