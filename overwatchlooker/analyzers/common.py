@@ -181,7 +181,8 @@ empty/default values for other fields.
 """
 
 
-def log_cost(model: str, input_tokens: int, output_tokens: int, cost: float) -> None:
+def log_cost(model: str, input_tokens: int, output_tokens: int, cost: float,
+             elapsed: float | None = None) -> None:
     """Append a line to api_costs.jsonl for tracking."""
     entry = {
         "ts": datetime.datetime.now().isoformat(),
@@ -190,6 +191,8 @@ def log_cost(model: str, input_tokens: int, output_tokens: int, cost: float) -> 
         "output_tokens": output_tokens,
         "cost_usd": round(cost, 6),
     }
+    if elapsed is not None:
+        entry["elapsed_s"] = round(elapsed, 1)
     try:
         with open(_COST_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")

@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import logging
+import time
 
 import codex_open_client
 from PIL import Image
@@ -49,6 +50,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
     from overwatchlooker.screenshot import resize_for_analyzer
     png_bytes = resize_for_analyzer(png_bytes, "codex")
     print_status(f"Sending to Codex ({CODEX_MODEL})...")
+    t0 = time.monotonic()
 
     client = codex_open_client.CodexClient()
 
@@ -91,6 +93,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
         reasoning=codex_open_client.Reasoning(effort=CODEX_REASONING) if CODEX_REASONING else None,
     )
 
+    elapsed = time.monotonic() - t0
     usage = response.usage
     if usage:
         try:
@@ -101,10 +104,11 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
             )
             total_cost = inp_cost + out_cost
             print_status(f"Tokens -- input: {usage.input_tokens}, output: {usage.output_tokens}, "
-                         f"est. API cost: ${total_cost:.4f}")
-            log_cost(CODEX_MODEL, usage.input_tokens, usage.output_tokens, total_cost)
+                         f"est. API cost: ${total_cost:.4f}, time: {elapsed:.1f}s")
+            log_cost(CODEX_MODEL, usage.input_tokens, usage.output_tokens, total_cost, elapsed)
         except Exception:
-            print_status(f"Tokens -- input: {usage.input_tokens}, output: {usage.output_tokens}")
-            log_cost(CODEX_MODEL, usage.input_tokens, usage.output_tokens, 0.0)
+            print_status(f"Tokens -- input: {usage.input_tokens}, output: {usage.output_tokens}, "
+                         f"time: {elapsed:.1f}s")
+            log_cost(CODEX_MODEL, usage.input_tokens, usage.output_tokens, 0.0, elapsed)
 
     return json.loads(response.output_text)

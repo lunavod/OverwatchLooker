@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import time
 
 import anthropic
 
@@ -29,6 +30,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
     png_bytes = resize_for_analyzer(png_bytes, "anthropic")
     image_data = base64.standard_b64encode(png_bytes).decode("utf-8")
     print_status(f"Sending to Claude ({ANTHROPIC_MODEL})...")
+    t0 = time.monotonic()
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -73,6 +75,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
         },
     )
 
+    elapsed = time.monotonic() - t0
     usage = message.usage
     inp_cost, out_cost = cost_per_token(
         model=ANTHROPIC_MODEL,
@@ -81,8 +84,8 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
     )
     total_cost = inp_cost + out_cost
     print_status(f"Tokens -- input: {usage.input_tokens}, output: {usage.output_tokens}, "
-                 f"cost: ${total_cost:.4f}")
-    log_cost(ANTHROPIC_MODEL, usage.input_tokens, usage.output_tokens, total_cost)
+                 f"cost: ${total_cost:.4f}, time: {elapsed:.1f}s")
+    log_cost(ANTHROPIC_MODEL, usage.input_tokens, usage.output_tokens, total_cost, elapsed)
 
     text = next(block.text for block in message.content if block.type == "text")
     return json.loads(text)
