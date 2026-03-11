@@ -151,6 +151,9 @@ class App:
                     if result.get("not_ow2_tab"):
                         print_status("Analyzer rejected screenshot as not OW2 Tab.")
                         continue
+                    # Override UNKNOWN result with subtitle/audio detection
+                    if result.get("result") == "UNKNOWN" and detection_result:
+                        result["result"] = detection_result
                     from overwatchlooker.analyzers.common import format_match
                     display_text = format_match(result, hero_map=hero_map)
                 else:
@@ -247,7 +250,11 @@ class App:
                 return
             self._analyzing = True
 
-        thread = threading.Thread(target=self._run_analysis, args=(result,), daemon=True)
+        hero_map = {}
+        if hasattr(self._detector, "hero_map"):
+            hero_map = self._detector.hero_map
+
+        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map), daemon=True)
         thread.start()
 
     def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
