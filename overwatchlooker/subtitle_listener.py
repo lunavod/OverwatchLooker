@@ -86,8 +86,6 @@ def process_subtitle_frame(frame_bgr: np.ndarray, sim_time: float,
     binary[text_mask] = 255
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     binary = cv2.dilate(binary, kernel, iterations=1)
-    binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
 
     text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
     _logger.debug(f"Subtitle OCR text: {text!r}")
