@@ -20,7 +20,7 @@ def main():
     )
     parser.add_argument(
         "--analyzer",
-        choices=["anthropic", "codex", "ocr"],
+        choices=["anthropic", "codex"],
         default=None,
         help="Analyzer backend (overrides ANALYZER env var)",
     )
@@ -33,11 +33,6 @@ def main():
         "--mcp",
         action="store_true",
         help="Upload match results to the MCP server",
-    )
-    parser.add_argument(
-        "--audio",
-        action="store_true",
-        help="Use audio-based detection instead of subtitle OCR (requires proc-tap)",
     )
     parser.add_argument(
         "--clean",
@@ -85,8 +80,6 @@ def main():
         features.append("telegram")
     if args.mcp:
         features.append("mcp")
-    if args.audio:
-        features.append("audio")
     if args.transcript:
         features.append("transcript")
     print_status(f"OverwatchLooker started ({', '.join(features)})")
@@ -124,10 +117,6 @@ def main():
             from overwatchlooker.analyzers.common import format_match
             display_text = format_match(result)
         else:
-            # Legacy str result (ocr backend or old cache)
-            if result.startswith("NOT_OW2_TAB"):
-                print_error("Image does not appear to be an OW2 Tab screen.")
-                sys.exit(1)
             display_text = result
 
         formatted = print_analysis(display_text)
@@ -178,7 +167,7 @@ def main():
             replay.close()
             print_status("Replay finished.")
     else:
-        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_audio=args.audio, use_transcript=args.transcript)
+        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript)
         app.run()
 
 

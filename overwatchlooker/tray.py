@@ -38,17 +38,15 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 class App:
     def __init__(self, use_telegram: bool = False, use_mcp: bool = False,
-                 use_audio: bool = False, use_transcript: bool = False,
-                 replay_source=None):
+                 use_transcript: bool = False, replay_source=None):
         self._active = False
-        self._detector = None  # SubtitleSystem or AudioListener
+        self._detector = None  # SubtitleSystem
         self._analyzing = False
         self._lock = threading.Lock()
         self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
         self._hero_crops: dict[str, bytes] = {}  # hero_name -> cropped PNG bytes
         self._use_telegram = use_telegram
         self._use_mcp = use_mcp
-        self._use_audio = use_audio
         self._use_transcript = use_transcript
         self._replay_source = replay_source  # ReplaySource for replay mode
         self._recorder = None  # Recorder for recording mode
@@ -159,27 +157,20 @@ class App:
                 result = analyze_screenshot(png_bytes, audio_result=detection_result,
                                             hero_crops=crops_for_analyzer or None)
 
-                # Handle dict (claude structured output) vs str (ocr)
-                if isinstance(result, dict):
-                    if result.get("not_ow2_tab"):
-                        print_status("Analyzer rejected screenshot as not OW2 Tab.")
-                        continue
-                    # Override UNKNOWN result with subtitle/audio detection
-                    if result.get("result") == "UNKNOWN" and detection_result:
-                        result["result"] = detection_result
-                    # Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes[]
-                    from overwatchlooker.analyzers.common import merge_heroes, format_match
-                    merge_heroes(result, hero_map=hero_map, hero_history=hero_history)
-                    display_text = format_match(result, hero_map=hero_map,
-                                                hero_history=hero_history)
-                else:
-                    if result.startswith("NOT_OW2_TAB"):
-                        print_status("Analyzer rejected screenshot as not OW2 Tab.")
-                        continue
-                    display_text = result
+                if result.get("not_ow2_tab"):
+                    print_status("Analyzer rejected screenshot as not OW2 Tab.")
+                    continue
+                # Override UNKNOWN result with subtitle detection
+                if result.get("result") == "UNKNOWN" and detection_result:
+                    result["result"] = detection_result
+                # Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes[]
+                from overwatchlooker.analyzers.common import merge_heroes, format_match
+                merge_heroes(result, hero_map=hero_map, hero_history=hero_history)
+                display_text = format_match(result, hero_map=hero_map,
+                                            hero_history=hero_history)
 
                 formatted = print_analysis(display_text)
-                if self._use_mcp and isinstance(result, dict):
+                if self._use_mcp:
                     from overwatchlooker.mcp_client import submit_match
                     try:
                         submit_match(result, png_bytes=png_bytes)
@@ -255,29 +246,12 @@ class App:
         tab_system = TabCaptureSystem(self, fps=fps)
         self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
 
-        if self._use_audio:
-            from overwatchlooker.audio_listener import AudioListener
-
-            def _audio_on_match(result: str) -> None:
-                # Audio runs outside the tick loop; approximate sim_time from tick count
-                tick_loop = self._tick_loop
-                if tick_loop:
-                    sim_time = tick_loop._current_tick / tick_loop.fps
-                else:
-                    sim_time = 0.0
-                self._on_detection(result, sim_time)
-
-            self._detector = AudioListener(on_match=_audio_on_match)
-            self._detector.start()
-            self._subtitle_system = None
-            detect_mode = "audio"
-        else:
-            subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
-            subtitle_system = SubtitleSystem(on_match=self._on_detection,
-                                             transcript=self._use_transcript)
-            self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
-            self._detector = subtitle_system
-            self._subtitle_system = subtitle_system
+        subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+        subtitle_system = SubtitleSystem(on_match=self._on_detection,
+                                         transcript=self._use_transcript)
+        self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
+        self._detector = subtitle_system
+        self._subtitle_system = subtitle_system
 
         if not self._replay_source:
             # Live mode: run tick loop in daemon thread

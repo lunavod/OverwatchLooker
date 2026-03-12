@@ -150,7 +150,3 @@ class TestResizeForAnalyzer:
         result = resize_for_analyzer(big, "codex")
         assert result is big
 
-    def test_no_resize_for_ocr(self):
-        big = self._make_png(3840, 2160)
-        result = resize_for_analyzer(big, "ocr")
-        assert result is big

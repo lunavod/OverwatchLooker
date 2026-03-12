@@ -37,7 +37,6 @@ CSIDL_MYPICTURES = 0x0027
 ANALYZER_MAX_EDGE = {
     "anthropic": 1568,
     "codex": None,  # subscription-based, send full res for best OCR accuracy
-    "ocr": None,  # no resize — OCR works on raw pixels
 }
 
 

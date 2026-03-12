@@ -18,12 +18,6 @@ class TestCache:
         result = cache.get(b"image1", "codex")
         assert result == data
 
-    def test_roundtrip_str(self, cache_dir):
-        text = "MAP: Numbani\nRESULT: VICTORY"
-        cache.put(b"image1", "ocr", text)
-        result = cache.get(b"image1", "ocr")
-        assert result == text
-
     def test_miss(self, cache_dir):
         assert cache.get(b"nonexistent", "codex") is None
 
