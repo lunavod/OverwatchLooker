@@ -69,7 +69,8 @@ class App:
                             break
                     png_bytes = capture_monitor()
                     saved_path = save_screenshot(png_bytes)
-                    if is_ow2_tab_screen(png_bytes):
+                    tab_check = is_ow2_tab_screen(png_bytes)
+                    if tab_check is True:
                         with self._lock:
                             self._valid_tabs.append((png_bytes, time.monotonic(), saved_path.name))
                             if len(self._valid_tabs) > 2:
@@ -78,6 +79,7 @@ class App:
                         got_valid = True
                         break
                     else:
+                        _logger.info(f"Tab screen rejected: {tab_check} ({saved_path.name})")
                         print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
                     time.sleep(0.5)
                 if not got_valid:

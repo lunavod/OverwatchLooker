@@ -84,23 +84,27 @@ def get_latest_screenshot() -> Path | None:
     return latest
 
 
-def is_ow2_tab_screen(png_bytes: bytes) -> bool:
+def is_ow2_tab_screen(png_bytes: bytes) -> bool | str:
     """Fast check whether a screenshot is an OW2 Tab scoreboard.
 
     The Tab screen always has a solid-colored panel across the top.
     We check that the left 30% of the top panel (y 2-6%) is a single
     uniform color (≤2 unique colors to allow minor compression artifacts).
+
+    Returns True if valid, or a string describing why it was rejected.
     """
     arr = np.frombuffer(png_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        return False
+        return "failed to decode image"
     h, w = img.shape[:2]
 
     # Middle 30% of top panel (y 2-6%) — avoids tabs on left and map text on right
     strip = img[int(0.02 * h):int(0.06 * h), int(0.35 * w):int(0.65 * w)]
     unique = len(np.unique(strip.reshape(-1, 3), axis=0))
-    return unique <= 2
+    if unique <= 2:
+        return True
+    return f"top strip has {unique} unique colors (max 2)"
 
 
 def _find_overwatch_hwnd() -> int | None:
