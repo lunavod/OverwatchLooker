@@ -1,6 +1,7 @@
 import ctypes
 import ctypes.wintypes
 import io
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -10,8 +11,14 @@ import mss.tools
 import numpy as np
 from PIL import Image
 
+import pytesseract
+
 from overwatchlooker.config import MONITOR_INDEX, SCREENSHOT_MAX_AGE_SECONDS
 
+# Point pytesseract at the Windows install path
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+_logger = logging.getLogger("overwatchlooker")
 _user32 = ctypes.windll.user32
 
 # Make process DPI-aware so window rects are in physical pixels (matching mss)
@@ -84,27 +91,27 @@ def get_latest_screenshot() -> Path | None:
     return latest
 
 
-def is_ow2_tab_screen(png_bytes: bytes) -> bool | str:
+def is_ow2_tab_screen(png_bytes: bytes) -> tuple[bool, str]:
     """Fast check whether a screenshot is an OW2 Tab scoreboard.
 
     The Tab screen always has a solid-colored panel across the top.
     We check that the left 30% of the top panel (y 2-6%) is a single
     uniform color (≤2 unique colors to allow minor compression artifacts).
 
-    Returns True if valid, or a string describing why it was rejected.
+    Returns (True, "") if valid, or (False, reason) if rejected.
     """
     arr = np.frombuffer(png_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        return "failed to decode image"
+        return False, "failed to decode image"
     h, w = img.shape[:2]
 
     # Middle 30% of top panel (y 2-6%) — avoids tabs on left and map text on right
     strip = img[int(0.02 * h):int(0.06 * h), int(0.35 * w):int(0.65 * w)]
     unique = len(np.unique(strip.reshape(-1, 3), axis=0))
     if unique <= 2:
-        return True
-    return f"top strip has {unique} unique colors (max 2)"
+        return True, ""
+    return False, f"top strip has {unique} unique colors (max 2)"
 
 
 def _find_overwatch_hwnd() -> int | None:
@@ -202,6 +209,134 @@ def _capture_window(hwnd: int) -> bytes | None:
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
+
+
+# Hero stats panel region (fraction of image: x1, y1, x2, y2)
+HERO_PANEL_REGION = (0.60, 0.12, 0.91, 0.85)
+
+# All Overwatch 2 hero names for fuzzy matching OCR results
+ALL_HEROES = [
+    "Ana", "Ashe", "Baptiste", "Bastion", "Brigitte", "Cassidy",
+    "D.Va", "Doomfist", "Echo", "Genji", "Hanzo", "Hazard",
+    "Illari", "Junker Queen", "Juno", "Junkrat", "Kiriko",
+    "Lifeweaver", "Lucio", "Mauga", "Mei", "Mercy", "Moira",
+    "Orisa", "Pharah", "Ramattra", "Reaper", "Reinhardt",
+    "Roadhog", "Sigma", "Sojourn", "Soldier: 76", "Sombra",
+    "Symmetra", "Torbjorn", "Tracer", "Venture", "Widowmaker",
+    "Winston", "Wrecking Ball", "Zarya", "Zenyatta",
+]
+
+
+def has_hero_panel(png_bytes: bytes) -> bool:
+    """Check if the screenshot has a hero stats panel on the right side.
+
+    The hero panel has white text (stat labels/values) on a dark background.
+    Returns True if the white text ratio exceeds the threshold.
+    """
+    arr = np.frombuffer(png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return False
+    h, w = img.shape[:2]
+    x1, y1 = int(HERO_PANEL_REGION[0] * w), int(HERO_PANEL_REGION[1] * h)
+    x2, y2 = int(HERO_PANEL_REGION[2] * w), int(HERO_PANEL_REGION[3] * h)
+    crop = img[y1:y2, x1:x2]
+    ch, cw = crop.shape[:2]
+
+    # Check the stats area (center of crop, avoids scoreboard columns on left)
+    strip = crop[int(ch * 0.25):int(ch * 0.75), int(cw * 0.15):int(cw * 0.75)]
+    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+
+    white_text = (hsv[:, :, 2] > 200) & (hsv[:, :, 1] < 30)
+    white_ratio = np.sum(white_text) / (strip.shape[0] * strip.shape[1])
+    return white_ratio >= 0.008
+
+
+def crop_hero_panel(png_bytes: bytes) -> bytes:
+    """Crop the hero stats panel region and return as PNG bytes."""
+    arr = np.frombuffer(png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    h, w = img.shape[:2]
+    x1, y1 = int(HERO_PANEL_REGION[0] * w), int(HERO_PANEL_REGION[1] * h)
+    x2, y2 = int(HERO_PANEL_REGION[2] * w), int(HERO_PANEL_REGION[3] * h)
+    crop = img[y1:y2, x1:x2]
+    _, buf = cv2.imencode(".png", crop)
+    return buf.tobytes()
+
+
+def _match_hero_name(raw_text: str) -> str:
+    """Fuzzy-match raw OCR text to the closest known hero name.
+
+    Returns the hero name in proper case, or empty string if no good match.
+    """
+    from overwatchlooker.subtitle_listener import _edit_distance
+
+    raw = raw_text.lower().strip()
+    if not raw:
+        return ""
+    best_hero, best_dist = "", 999
+    for hero in ALL_HEROES:
+        d = _edit_distance(raw, hero.lower().replace(" ", ""))
+        if d < best_dist:
+            best_dist = d
+            best_hero = hero
+    # Accept if edit distance is reasonable (at most 40% of hero name length, min 2)
+    if best_dist <= max(2, len(best_hero) * 0.4):
+        return best_hero
+    return ""
+
+
+def ocr_hero_name(crop_png_bytes: bytes) -> str:
+    """OCR the hero name from a hero panel crop.
+
+    The hero name appears below the hero portrait (~y 0.28-0.38 in the crop),
+    as an all-caps word like "REINHARDT", "JUNO", "MOIRA".
+    Returns the canonical hero name, or empty string if OCR fails.
+    """
+    import re
+
+    arr = np.frombuffer(crop_png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return ""
+
+    h, w = img.shape[:2]
+    # Crop hero name row, left 55% only (excludes role icon on the right)
+    name_region = img[int(h * 0.28):int(h * 0.38), :int(w * 0.55)]
+
+    # Binarize: keep white/bright text with relaxed thresholds
+    hsv = cv2.cvtColor(name_region, cv2.COLOR_BGR2HSV)
+    white_mask = (hsv[:, :, 2] > 160) & (hsv[:, :, 1] < 50)
+    binary = np.zeros(name_region.shape[:2], dtype=np.uint8)
+    binary[white_mask] = 255
+
+    # Dilate to thicken thin strokes, then upscale
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    binary = cv2.dilate(binary, kernel, iterations=1)
+    binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
+
+    try:
+        text = pytesseract.image_to_string(
+            binary,
+            config="--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ.",
+        ).strip()
+    except Exception as e:
+        _logger.warning(f"Hero name OCR failed: {e}")
+        return ""
+
+    # Clean: keep only alpha
+    text = re.sub(r"[^a-zA-Z]", "", text).strip()
+    if not text or len(text) < 3:
+        return ""
+
+    # Fuzzy-match against known hero list
+    matched = _match_hero_name(text)
+    if matched:
+        return matched
+
+    _logger.warning(f"Hero name OCR '{text}' didn't match any known hero")
+    return ""
 
 
 def capture_monitor() -> bytes:

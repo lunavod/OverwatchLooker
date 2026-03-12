@@ -543,7 +543,82 @@ def _to_match_dict(data: MatchData) -> dict:
     }
 
 
-def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dict:
+def _extract_hero_stats_from_crop(crop_png_bytes: bytes) -> dict | None:
+    """Extract hero stats from a pre-cropped hero panel image using EasyOCR.
+
+    The crop corresponds to HERO_PANEL_REGION (0.60, 0.12, 0.91, 0.85) of the full image.
+    Featured stat region and stats region are translated to crop-relative coordinates.
+    """
+    img = cv2.imdecode(np.frombuffer(crop_png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    reader = _get_reader()
+    hero = HeroStats()
+
+    # --- Featured stat (big number + label) ---
+    # REGION_HERO_FEATURED (0.74, 0.13, 0.90, 0.25) translated to crop coords
+    _CROP_FEATURED = (0.45, 0.01, 0.97, 0.18)
+    feat_crop = _crop_region(img, _CROP_FEATURED)
+    feat_up = cv2.resize(feat_crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    h_feat = feat_up.shape[0]
+    feat_num = feat_up[:h_feat // 2, :]
+    num_results = reader.readtext(feat_num, detail=0, allowlist="0123456789,.", paragraph=True)
+    feat_label = feat_up[h_feat // 2:, :]
+    label_results = reader.readtext(feat_label, detail=0, paragraph=True)
+    feat_number = num_results[0].strip() if num_results else ""
+    feat_label_text = " ".join(label_results).strip() if label_results else ""
+    if feat_label_text and feat_number:
+        hero.featured_stat = f"{feat_label_text}: {feat_number}"
+    elif feat_label_text:
+        hero.featured_stat = f"{feat_label_text}: 0"
+    elif feat_number:
+        hero.featured_stat = feat_number
+
+    # --- Hero name + stat lines ---
+    # REGION_HERO_STATS (0.62, 0.24, 0.984, 0.78) translated to crop coords
+    _CROP_STATS = (0.065, 0.164, 1.0, 0.904)
+    stats_crop = _crop_region(img, _CROP_STATS)
+    stats_up = cv2.resize(stats_crop, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+    results = reader.readtext(stats_up, detail=1, paragraph=False)
+
+    sorted_results = sorted(results, key=lambda r: sum(pt[1] for pt in r[0]) / 4)
+    sorted_results = [r for r in sorted_results if r[2] > 0.15 or len(r[1].strip()) > 2]
+
+    if not sorted_results:
+        return hero if hero.featured_stat else None
+
+    hero.hero_name = sorted_results[0][1].strip()
+
+    items = sorted_results[1:]
+    pending_value = None
+    for _, text, conf in items:
+        text = text.strip()
+        if not text:
+            continue
+        is_value = bool(re.search(r"[\d%]", text))
+        if is_value:
+            text = text.rstrip("/").strip()
+            if text == "%":
+                text = "0%"
+            if pending_value is not None:
+                hero.stats.append(pending_value)
+            pending_value = text
+        else:
+            if pending_value is not None:
+                hero.stats.append(f"{text}: {pending_value}")
+                pending_value = None
+            else:
+                hero.stats.append(f"{text}: 0")
+    if pending_value is not None:
+        hero.stats.append(pending_value)
+
+    if not hero.hero_name:
+        return None
+    return _hero_to_dict(hero)
+
+
+def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
+                       hero_crops: dict[str, bytes] | None = None) -> dict:
     """Analyze an OW2 scoreboard screenshot using EasyOCR."""
     from overwatchlooker.display import print_status
 
@@ -575,7 +650,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
     print_status("Extracting hero stats...")
     hero_stats = _extract_hero_stats(img)
 
-    return _to_match_dict(
+    result_dict = _to_match_dict(
         MatchData(
             map_name=map_name,
             time=time_str,
@@ -587,3 +662,16 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
             hero_stats=hero_stats,
         )
     )
+
+    # Process extra hero crops
+    if hero_crops:
+        extra = []
+        for crop_name, crop_bytes in hero_crops.items():
+            print_status(f"Extracting hero stats from crop: {crop_name}...")
+            hero_dict = _extract_hero_stats_from_crop(crop_bytes)
+            if hero_dict:
+                extra.append(hero_dict)
+        if extra:
+            result_dict["extra_hero_stats"] = extra
+
+    return result_dict

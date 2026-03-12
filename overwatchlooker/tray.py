@@ -14,9 +14,13 @@ from overwatchlooker.hotkey import HotkeyListener
 from overwatchlooker.notification import copy_to_clipboard, show_notification
 from overwatchlooker.screenshot import (
     capture_monitor,
+    crop_hero_panel,
+    has_hero_panel,
     is_ow2_tab_screen,
+    ocr_hero_name,
     save_screenshot,
 )
+from overwatchlooker.subtitle_listener import _edit_distance
 
 
 def _create_icon_image() -> Image.Image:
@@ -44,6 +48,7 @@ class App:
         self._analyzing = False
         self._lock = threading.Lock()
         self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
+        self._hero_crops: dict[str, bytes] = {}  # hero_name -> cropped PNG bytes
         self._tab_pending = False  # debounce flag
         self._tab_held = False
         self._use_telegram = use_telegram
@@ -69,17 +74,31 @@ class App:
                             break
                     png_bytes = capture_monitor()
                     saved_path = save_screenshot(png_bytes)
-                    tab_check = is_ow2_tab_screen(png_bytes)
-                    if tab_check is True:
+                    is_tab, tab_reason = is_ow2_tab_screen(png_bytes)
+                    if is_tab:
                         with self._lock:
                             self._valid_tabs.append((png_bytes, time.monotonic(), saved_path.name))
                             if len(self._valid_tabs) > 2:
                                 self._valid_tabs.pop(0)
+                        # Try to capture hero panel crop
+                        if has_hero_panel(png_bytes):
+                            crop = crop_hero_panel(png_bytes)
+                            name = ocr_hero_name(crop)
+                            if name:
+                                with self._lock:
+                                    if not any(_edit_distance(name.lower(), k.lower()) <= 2
+                                               for k in self._hero_crops):
+                                        self._hero_crops[name] = crop
+                                        _logger.info(f"Stored hero crop: {name}")
+                                    else:
+                                        _logger.debug(f"Hero crop dedup skip: {name}")
+                            else:
+                                _logger.debug("Hero panel found but OCR failed to read name")
                         print_status(f"Tab screenshot saved to {saved_path}")
                         got_valid = True
                         break
                     else:
-                        _logger.info(f"Tab screen rejected: {tab_check} ({saved_path.name})")
+                        _logger.info(f"Tab screen rejected: {tab_reason} ({saved_path.name})")
                         print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
                     time.sleep(0.5)
                 if not got_valid:
@@ -105,6 +124,8 @@ class App:
                 print_status("Analysis already in progress, ignoring detection trigger.")
                 return
             self._analyzing = True
+            hero_crops = dict(self._hero_crops)
+            self._hero_crops.clear()
 
         # Grab hero map and history from subtitle listener before resetting
         hero_map = {}
@@ -116,11 +137,13 @@ class App:
         if hasattr(self._detector, "reset_match"):
             self._detector.reset_match()
 
-        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map, hero_history), daemon=True)
+        thread = threading.Thread(target=self._run_analysis,
+                                  args=(result, hero_map, hero_history, hero_crops), daemon=True)
         thread.start()
 
     def _run_analysis(self, detection_result: str, hero_map: dict[str, str] | None = None,
-                      hero_history: dict[str, list[tuple[float, str]]] | None = None) -> None:
+                      hero_history: dict[str, list[tuple[float, str]]] | None = None,
+                      hero_crops: dict[str, bytes] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
             print_status(f"Detected: {detection_result}. "
@@ -150,9 +173,26 @@ class App:
 
                 print_status(f"Analyzing {filename} ({len(png_bytes)} bytes, "
                              f"{age:.0f}s old) with {ANALYZER} backend...")
+
+                # Remove the final screenshot's hero from crops to avoid duplicate
+                crops_for_analyzer = dict(hero_crops) if hero_crops else {}
+                if crops_for_analyzer and has_hero_panel(png_bytes):
+                    final_crop = crop_hero_panel(png_bytes)
+                    final_hero = ocr_hero_name(final_crop)
+                    if final_hero:
+                        to_remove = [k for k in crops_for_analyzer
+                                     if _edit_distance(final_hero.lower(), k.lower()) <= 2]
+                        for k in to_remove:
+                            del crops_for_analyzer[k]
+                            _logger.info(f"Removed '{k}' from hero crops (matches final hero '{final_hero}')")
+
+                if crops_for_analyzer:
+                    _logger.info(f"Sending {len(crops_for_analyzer)} extra hero crops: {list(crops_for_analyzer.keys())}")
+
                 from overwatchlooker.analyzers import get_analyze_screenshot
                 analyze_screenshot = get_analyze_screenshot()
-                result = analyze_screenshot(png_bytes, audio_result=detection_result)
+                result = analyze_screenshot(png_bytes, audio_result=detection_result,
+                                            hero_crops=crops_for_analyzer or None)
 
                 # Handle dict (claude structured output) vs str (ocr)
                 if isinstance(result, dict):
@@ -162,7 +202,9 @@ class App:
                     # Override UNKNOWN result with subtitle/audio detection
                     if result.get("result") == "UNKNOWN" and detection_result:
                         result["result"] = detection_result
-                    from overwatchlooker.analyzers.common import format_match
+                    # Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes[]
+                    from overwatchlooker.analyzers.common import merge_heroes, format_match
+                    merge_heroes(result, hero_map=hero_map, hero_history=hero_history)
                     display_text = format_match(result, hero_map=hero_map,
                                                 hero_history=hero_history)
                 else:
@@ -175,7 +217,7 @@ class App:
                 if self._use_mcp and isinstance(result, dict):
                     from overwatchlooker.mcp_client import submit_match
                     try:
-                        submit_match(result, png_bytes=png_bytes, hero_map=hero_map)
+                        submit_match(result, png_bytes=png_bytes)
                         print_status("Uploaded to MCP.")
                     except Exception as e:
                         print_error(f"MCP upload failed: {e}")
@@ -258,6 +300,8 @@ class App:
                 print_status("Analysis already in progress.")
                 return
             self._analyzing = True
+            hero_crops = dict(self._hero_crops)
+            self._hero_crops.clear()
 
         hero_map = {}
         hero_history = {}
@@ -265,8 +309,11 @@ class App:
             hero_map = self._detector.hero_map
         if hasattr(self._detector, "hero_history"):
             hero_history = self._detector.hero_history
+        if hasattr(self._detector, "reset_match"):
+            self._detector.reset_match()
 
-        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map, hero_history), daemon=True)
+        thread = threading.Thread(target=self._run_analysis,
+                                  args=(result, hero_map, hero_history, hero_crops), daemon=True)
         thread.start()
 
     def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:

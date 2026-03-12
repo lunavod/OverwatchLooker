@@ -42,14 +42,16 @@ def _to_data_url(png_bytes: bytes) -> str:
     return f"data:image/png;base64,{b64}"
 
 
-def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dict:
+def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
+                       hero_crops: dict[str, bytes] | None = None) -> dict:
     """Send screenshot to Codex/ChatGPT and return structured match data."""
     from overwatchlooker.display import print_status
 
     names_crop = _crop_names(png_bytes)
     from overwatchlooker.screenshot import resize_for_analyzer
     png_bytes = resize_for_analyzer(png_bytes, "codex")
-    print_status(f"Sending to Codex ({CODEX_MODEL})...")
+    crop_count = len(hero_crops) if hero_crops else 0
+    print_status(f"Sending to Codex ({CODEX_MODEL}), {crop_count} extra hero crops...")
     t0 = time.monotonic()
 
     client = codex_open_client.CodexClient()
@@ -58,6 +60,12 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
         "Analyze this Overwatch 2 Tab screen screenshot. "
         "The second image is a zoomed crop of the player names area for better readability."
     )
+    if hero_crops:
+        user_text += (
+            f"\n\nAdditional images show hero stat panels for {len(hero_crops)} other heroes "
+            "the player switched to during this match. For each, read the hero name and stats. "
+            "Return them in the 'extra_hero_stats' array at the top level."
+        )
     if OVERWATCH_USERNAME:
         user_text += (
             f"\n\nThe player's username is \"{OVERWATCH_USERNAME}\". "
@@ -70,23 +78,32 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dic
             "Use this as fallback if you cannot read the result text on screen."
         )
 
+    content = [
+        codex_open_client.InputImage(image_url=_to_data_url(png_bytes), detail="high"),
+        codex_open_client.InputImage(image_url=_to_data_url(names_crop), detail="high"),
+    ]
+    if hero_crops:
+        for hero_name, crop_bytes in hero_crops.items():
+            content.append(codex_open_client.InputImage(
+                image_url=_to_data_url(crop_bytes), detail="high"))
+    content.append(codex_open_client.InputText(text=user_text))
+
+    # Build schema — add extra_hero_stats if we have hero crops
+    schema = MATCH_SCHEMA
+    if hero_crops:
+        from overwatchlooker.analyzers.common import make_schema_with_extra_heroes
+        schema = make_schema_with_extra_heroes()
+
     response = client.responses.create(
         model=CODEX_MODEL,
         instructions=SYSTEM_PROMPT,
         input=[
-            codex_open_client.InputMessage(
-                role="user",
-                content=[
-                    codex_open_client.InputImage(image_url=_to_data_url(png_bytes), detail="high"),
-                    codex_open_client.InputImage(image_url=_to_data_url(names_crop), detail="high"),
-                    codex_open_client.InputText(text=user_text),
-                ],
-            )
+            codex_open_client.InputMessage(role="user", content=content)
         ],
         text=codex_open_client.TextConfig(
             format=codex_open_client.ResponseFormatJsonSchema(
-                name=MATCH_SCHEMA["name"],
-                schema=MATCH_SCHEMA["schema"],
+                name=schema["name"],
+                schema=schema["schema"],
                 strict=True,
             )
         ),

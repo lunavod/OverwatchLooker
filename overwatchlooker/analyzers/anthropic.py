@@ -22,7 +22,8 @@ from overwatchlooker.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOKEN
 _logger = logging.getLogger("overwatchlooker")
 
 
-def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None) -> dict:
+def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
+                       hero_crops: dict[str, bytes] | None = None) -> dict:
     """Send screenshot to Claude Vision and return structured match data."""
     from overwatchlooker.display import print_status
 

@@ -15,7 +15,6 @@ def submit_match(
     data: dict,
     png_bytes: bytes | None = None,
     is_backfill: bool = False,
-    hero_map: dict[str, str] | None = None,
 ) -> dict:
     """Submit a match to the MCP server. Returns the tool result."""
     if not MCP_URL:
@@ -23,17 +22,7 @@ def submit_match(
 
     _logger.info(f"MCP: submitting match ({data['map_name']}, {data['mode']}, {data['queue_type']})")
 
-    # Inject subtitle hero names into players that don't already have one
     players = data["players"]
-    if hero_map:
-        players = []
-        for p in data["players"]:
-            p = dict(p)  # shallow copy
-            if not p.get("hero_name") and not p.get("hero"):
-                hero = hero_map.get(p["player_name"])
-                if hero:
-                    p["hero_name"] = hero
-            players.append(p)
 
     # Build arguments matching the submit_match tool schema
     args = {

@@ -148,6 +148,46 @@ MATCH_SCHEMA = {
     },
 }
 
+_EXTRA_HERO_STATS_SCHEMA = {
+    "type": "array",
+    "description": "Hero stats from additional hero panel crops (other heroes the self-player switched to). Empty array if no extra crops provided.",
+    "items": {
+        "type": "object",
+        "properties": {
+            "hero_name": {
+                "type": "string",
+                "description": "Hero name read from the crop.",
+            },
+            "stats": {
+                "type": "array",
+                "description": "Hero-specific stat entries from the crop.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "value": {"type": "string"},
+                        "is_featured": {"type": "boolean"},
+                    },
+                    "required": ["label", "value", "is_featured"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["hero_name", "stats"],
+        "additionalProperties": False,
+    },
+}
+
+
+def make_schema_with_extra_heroes() -> dict:
+    """Return MATCH_SCHEMA extended with extra_hero_stats field."""
+    import copy
+    schema = copy.deepcopy(MATCH_SCHEMA)
+    schema["schema"]["properties"]["extra_hero_stats"] = _EXTRA_HERO_STATS_SCHEMA
+    schema["schema"]["required"].append("extra_hero_stats")
+    return schema
+
+
 SYSTEM_PROMPT = """\
 You are an Overwatch 2 match analyst. You will be given a screenshot of the \
 in-game Tab screen (the scoreboard that appears when a player holds Tab during \
@@ -200,6 +240,91 @@ def log_cost(model: str, input_tokens: int, output_tokens: int, cost: float,
         _logger.warning(f"Failed to write cost log: {e}")
 
 
+def merge_heroes(data: dict, hero_map: dict[str, str] | None = None,
+                 hero_history: dict[str, list[tuple[float, str]]] | None = None) -> dict:
+    """Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes arrays.
+
+    Mutates and returns data with:
+    - Each player gets a 'heroes' array
+    - 'extra_hero_stats' is consumed and removed from top-level
+    - 'hero' field is removed from each player (heroes[] is canonical)
+    """
+    from overwatchlooker.subtitle_listener import _edit_distance
+
+    hero_history = hero_history or {}
+    hero_map = hero_map or {}
+    extra_hero_stats = data.pop("extra_hero_stats", []) or []
+
+    # Compute match_start from hero_history timestamps
+    all_times = [t for entries in hero_history.values() for t, _ in entries]
+    match_start = min(all_times) if all_times else 0.0
+
+    for p in data["players"]:
+        player_name = p["player_name"]
+        heroes = []
+
+        # 1. Start with hero_history (subtitle tracking) — gives hero_name + started_at
+        hist = hero_history.get(player_name, [])
+        if hist:
+            # Group by hero name (player may switch back to same hero)
+            hero_times: dict[str, list[int]] = {}
+            for t, hero_name in hist:
+                start_s = max(0, int(t - match_start))
+                hero_times.setdefault(hero_name, []).append(start_s)
+            for hero_name, times in hero_times.items():
+                heroes.append({
+                    "hero_name": hero_name,
+                    "started_at": times,
+                    "stats": [],
+                })
+        elif hero_map.get(player_name):
+            # Single hero from subtitle map, no switch history
+            heroes.append({
+                "hero_name": hero_map[player_name],
+                "started_at": [0],
+                "stats": [],
+            })
+
+        # 2. Merge analyzer's main hero stats (from the screenshot's hero panel)
+        if p.get("is_self") and p.get("hero"):
+            analyzer_hero = p["hero"]
+            matched = False
+            for h in heroes:
+                if _edit_distance(h["hero_name"].lower(), analyzer_hero["hero_name"].lower()) <= 2:
+                    h["stats"] = analyzer_hero["stats"]
+                    matched = True
+                    break
+            if not matched:
+                heroes.append({
+                    "hero_name": analyzer_hero["hero_name"],
+                    "started_at": [],
+                    "stats": analyzer_hero["stats"],
+                })
+
+        # 3. Merge extra_hero_stats (from hero crops) — only for self player
+        if p.get("is_self"):
+            for extra in extra_hero_stats:
+                matched = False
+                for h in heroes:
+                    if _edit_distance(h["hero_name"].lower(), extra["hero_name"].lower()) <= 2:
+                        if not h["stats"]:  # don't overwrite main hero stats
+                            h["stats"] = extra["stats"]
+                        matched = True
+                        break
+                if not matched:
+                    heroes.append({
+                        "hero_name": extra["hero_name"],
+                        "started_at": [],
+                        "stats": extra["stats"],
+                    })
+
+        p["heroes"] = heroes
+        # Remove old hero field — heroes[] is now canonical
+        p.pop("hero", None)
+
+    return data
+
+
 def format_match(data: dict, hero_map: dict[str, str] | None = None,
                  hero_history: dict[str, list[tuple[float, str]]] | None = None) -> str:
     """Format a structured match dict into the display text.
@@ -241,19 +366,19 @@ def format_match(data: dict, hero_map: dict[str, str] | None = None,
             )
         lines.append("")
 
-    # Hero stats
+    # Hero stats from merged heroes[] arrays
     hero_entries = []
     for p in data["players"]:
-        hero = p.get("hero")
-        if hero:
-            parts = []
-            featured = [s for s in hero["stats"] if s.get("is_featured")]
-            regular = [s for s in hero["stats"] if not s.get("is_featured")]
-            for s in featured:
-                parts.append(f"{s['label']}: {s['value']}")
-            for s in regular:
-                parts.append(f"{s['label']}: {s['value']}")
-            hero_entries.append(f"{hero['hero_name']} - {'; '.join(parts)}")
+        for h in p.get("heroes", []):
+            if h.get("stats"):
+                parts = []
+                featured = [s for s in h["stats"] if s.get("is_featured")]
+                regular = [s for s in h["stats"] if not s.get("is_featured")]
+                for s in featured:
+                    parts.append(f"{s['label']}: {s['value']}")
+                for s in regular:
+                    parts.append(f"{s['label']}: {s['value']}")
+                hero_entries.append(f"{h['hero_name']} - {'; '.join(parts)}")
 
     if hero_entries:
         lines.append("HERO STATS:")
