@@ -106,15 +106,21 @@ class App:
                 return
             self._analyzing = True
 
-        # Grab hero map from subtitle listener before starting analysis thread
+        # Grab hero map and history from subtitle listener before resetting
         hero_map = {}
+        hero_history = {}
         if hasattr(self._detector, "hero_map"):
             hero_map = self._detector.hero_map
+        if hasattr(self._detector, "hero_history"):
+            hero_history = self._detector.hero_history
+        if hasattr(self._detector, "reset_match"):
+            self._detector.reset_match()
 
-        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map), daemon=True)
+        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map, hero_history), daemon=True)
         thread.start()
 
-    def _run_analysis(self, detection_result: str, hero_map: dict[str, str] | None = None) -> None:
+    def _run_analysis(self, detection_result: str, hero_map: dict[str, str] | None = None,
+                      hero_history: dict[str, list[tuple[float, str]]] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
             print_status(f"Detected: {detection_result}. "
@@ -157,7 +163,8 @@ class App:
                     if result.get("result") == "UNKNOWN" and detection_result:
                         result["result"] = detection_result
                     from overwatchlooker.analyzers.common import format_match
-                    display_text = format_match(result, hero_map=hero_map)
+                    display_text = format_match(result, hero_map=hero_map,
+                                                hero_history=hero_history)
                 else:
                     if result.startswith("NOT_OW2_TAB"):
                         print_status("Analyzer rejected screenshot as not OW2 Tab.")
@@ -253,10 +260,13 @@ class App:
             self._analyzing = True
 
         hero_map = {}
+        hero_history = {}
         if hasattr(self._detector, "hero_map"):
             hero_map = self._detector.hero_map
+        if hasattr(self._detector, "hero_history"):
+            hero_history = self._detector.hero_history
 
-        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map), daemon=True)
+        thread = threading.Thread(target=self._run_analysis, args=(result, hero_map, hero_history), daemon=True)
         thread.start()
 
     def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:

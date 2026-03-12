@@ -37,6 +37,22 @@ _SAT_MIN_COLOR = 80       # min saturation for colored text (red/blue/green)
 _PIXEL_THRESHOLD = 500    # minimum text pixels to trigger OCR
 
 
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance between two strings."""
+    if len(a) < len(b):
+        return _edit_distance(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1,
+                            prev[j] + (0 if ca == cb else 1)))
+        prev = curr
+    return prev[-1]
+
+
 class SubtitleListener:
     """Monitors screen for VICTORY/DEFEAT subtitle text."""
 
@@ -49,11 +65,22 @@ class SubtitleListener:
         self._transcript_file = None
         self._last_lines: set[str] = set()  # lines from the previous OCR pass
         self._hero_map: dict[str, str] = {}  # UPPERCASE username -> hero name (Title Case)
+        self._hero_history: dict[str, list[tuple[float, str]]] = {}  # username -> [(time, hero), ...]
 
     @property
     def hero_map(self) -> dict[str, str]:
         """Username -> hero name mapping from subtitle OCR. Usernames are UPPERCASE."""
         return dict(self._hero_map)
+
+    @property
+    def hero_history(self) -> dict[str, list[tuple[float, str]]]:
+        """Username -> list of (monotonic_time, hero_name) tracking hero switches."""
+        return {k: list(v) for k, v in self._hero_history.items()}
+
+    def reset_match(self) -> None:
+        """Clear hero tracking for a new match."""
+        self._hero_map.clear()
+        self._hero_history.clear()
 
     def start(self) -> None:
         if self._running:
@@ -141,11 +168,26 @@ class SubtitleListener:
         _logger.debug(f"Subtitle OCR text: {text!r}")
 
         # Extract username -> hero mappings from [USERNAME (HERO)] lines
+        # Take only the last hero per player in this frame (newest subtitle)
+        now = time.monotonic()
+        frame_heroes: dict[str, str] = {}
         for m in re.finditer(r"\[(\w+)\s+\(([^)]+)\)\]", text):
             username = m.group(1).upper()
             hero = m.group(2).strip().title()
             if username != "ATHENA":
-                self._hero_map[username] = hero
+                frame_heroes[username] = hero
+
+        for username, hero in frame_heroes.items():
+            history = self._hero_history.get(username)
+            if history:
+                last_hero = history[-1][1]
+                if _edit_distance(hero.lower(), last_hero.lower()) <= 2:
+                    continue  # OCR artifact, same hero
+            # New player or genuine hero switch
+            if username not in self._hero_history:
+                self._hero_history[username] = []
+            self._hero_history[username].append((now, hero))
+            self._hero_map[username] = hero
 
         # Write new subtitle lines to transcript (deduplicated against previous pass)
         if self._transcript_file and text:

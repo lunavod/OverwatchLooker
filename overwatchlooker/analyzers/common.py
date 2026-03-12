@@ -200,11 +200,13 @@ def log_cost(model: str, input_tokens: int, output_tokens: int, cost: float,
         _logger.warning(f"Failed to write cost log: {e}")
 
 
-def format_match(data: dict, hero_map: dict[str, str] | None = None) -> str:
+def format_match(data: dict, hero_map: dict[str, str] | None = None,
+                 hero_history: dict[str, list[tuple[float, str]]] | None = None) -> str:
     """Format a structured match dict into the display text.
 
     Args:
         hero_map: Optional UPPERCASE username -> hero name mapping from subtitle OCR.
+        hero_history: Optional UPPERCASE username -> [(monotonic_time, hero_name), ...] for switches.
     """
     lines = []
     lines.append(f"MAP: {data['map_name']}")
@@ -222,10 +224,14 @@ def format_match(data: dict, hero_map: dict[str, str] | None = None) -> str:
             def _fmt(v):
                 return "-" if v is None else f"{v:,}"
             name = p['player_name']
-            # Show hero from subtitle OCR if available
-            subtitle_hero = (hero_map or {}).get(p['player_name'])
-            if subtitle_hero:
-                name += f" [{subtitle_hero}]"
+            player_hist = (hero_history or {}).get(p['player_name'], [])
+            if len(player_hist) > 1:
+                heroes = [h for _, h in player_hist]
+                name += f" [{' > '.join(heroes)}]"
+            else:
+                subtitle_hero = (hero_map or {}).get(p['player_name'])
+                if subtitle_hero:
+                    name += f" [{subtitle_hero}]"
             if p.get('title'):
                 name += f" ({p['title']})"
             lines.append(
@@ -252,5 +258,34 @@ def format_match(data: dict, hero_map: dict[str, str] | None = None) -> str:
     if hero_entries:
         lines.append("HERO STATS:")
         lines.extend(hero_entries)
+
+    # Hero switches section (players who switched heroes during the match)
+    if hero_history:
+        all_times = [t for entries in hero_history.values() for t, _ in entries]
+        if all_times:
+            match_start = min(all_times)
+            switch_lines = []
+            player_names = {p['player_name'] for p in data['players']}
+            for username in sorted(hero_history):
+                if username not in player_names:
+                    continue
+                entries = hero_history[username]
+                if len(entries) <= 1:
+                    continue
+                parts = []
+                for i, (t, hero) in enumerate(entries):
+                    start_s = int(t - match_start)
+                    start_mm, start_ss = divmod(start_s, 60)
+                    if i < len(entries) - 1:
+                        end_s = int(entries[i + 1][0] - match_start)
+                        end_mm, end_ss = divmod(end_s, 60)
+                        parts.append(f"{hero} ({start_mm}:{start_ss:02d}-{end_mm}:{end_ss:02d})")
+                    else:
+                        parts.append(f"{hero} ({start_mm}:{start_ss:02d}+)")
+                switch_lines.append(f"{username}: {', '.join(parts)}")
+            if switch_lines:
+                lines.append("")
+                lines.append("HERO SWITCHES:")
+                lines.extend(switch_lines)
 
     return "\n".join(lines)
