@@ -214,17 +214,6 @@ def _capture_window(hwnd: int) -> bytes | None:
 # Hero stats panel region (fraction of image: x1, y1, x2, y2)
 HERO_PANEL_REGION = (0.60, 0.12, 0.91, 0.85)
 
-# All Overwatch 2 hero names for fuzzy matching OCR results
-ALL_HEROES = [
-    "Ana", "Ashe", "Baptiste", "Bastion", "Brigitte", "Cassidy",
-    "D.Va", "Doomfist", "Echo", "Genji", "Hanzo", "Hazard",
-    "Illari", "Junker Queen", "Juno", "Junkrat", "Kiriko",
-    "Lifeweaver", "Lucio", "Mauga", "Mei", "Mercy", "Moira",
-    "Orisa", "Pharah", "Ramattra", "Reaper", "Reinhardt",
-    "Roadhog", "Sigma", "Sojourn", "Soldier: 76", "Sombra",
-    "Symmetra", "Torbjorn", "Tracer", "Venture", "Widowmaker",
-    "Winston", "Wrecking Ball", "Zarya", "Zenyatta",
-]
 
 
 def has_hero_panel(png_bytes: bytes) -> bool:
@@ -262,28 +251,6 @@ def crop_hero_panel(png_bytes: bytes) -> bytes:
     crop = img[y1:y2, x1:x2]
     _, buf = cv2.imencode(".png", crop)
     return buf.tobytes()
-
-
-def _match_hero_name(raw_text: str) -> str:
-    """Fuzzy-match raw OCR text to the closest known hero name.
-
-    Returns the hero name in proper case, or empty string if no good match.
-    """
-    from overwatchlooker.subtitle_listener import _edit_distance
-
-    raw = raw_text.lower().strip()
-    if not raw:
-        return ""
-    best_hero, best_dist = "", 999
-    for hero in ALL_HEROES:
-        d = _edit_distance(raw, hero.lower().replace(" ", ""))
-        if d < best_dist:
-            best_dist = d
-            best_hero = hero
-    # Accept if edit distance is reasonable (at most 40% of hero name length, min 2)
-    if best_dist <= max(2, len(best_hero) * 0.4):
-        return best_hero
-    return ""
 
 
 def ocr_hero_name(crop_png_bytes: bytes) -> str:
@@ -331,7 +298,8 @@ def ocr_hero_name(crop_png_bytes: bytes) -> str:
         return ""
 
     # Fuzzy-match against known hero list
-    matched = _match_hero_name(text)
+    from overwatchlooker.heroes import match_hero_name
+    matched = match_hero_name(text)
     if matched:
         return matched
 

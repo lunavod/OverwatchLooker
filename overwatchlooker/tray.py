@@ -20,7 +20,7 @@ from overwatchlooker.screenshot import (
     ocr_hero_name,
     save_screenshot,
 )
-from overwatchlooker.subtitle_listener import _edit_distance
+from overwatchlooker.heroes import edit_distance as _edit_distance
 
 
 def _create_icon_image() -> Image.Image:

@@ -15,7 +15,7 @@ from overwatchlooker.screenshot import (
     has_hero_panel,
     ocr_hero_name,
 )
-from overwatchlooker.subtitle_listener import _edit_distance
+from overwatchlooker.heroes import edit_distance as _edit_distance
 
 SCREENSHOTS_DIR = Path(r"C:\Users\yegor\OneDrive\Pictures\OverwatchLooker")
 

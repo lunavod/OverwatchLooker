@@ -37,20 +37,10 @@ _SAT_MIN_COLOR = 80       # min saturation for colored text (red/blue/green)
 _PIXEL_THRESHOLD = 500    # minimum text pixels to trigger OCR
 
 
-def _edit_distance(a: str, b: str) -> int:
-    """Levenshtein distance between two strings."""
-    if len(a) < len(b):
-        return _edit_distance(b, a)
-    if not b:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a):
-        curr = [i + 1]
-        for j, cb in enumerate(b):
-            curr.append(min(prev[j + 1] + 1, curr[j] + 1,
-                            prev[j] + (0 if ca == cb else 1)))
-        prev = curr
-    return prev[-1]
+from overwatchlooker.heroes import edit_distance, match_hero_name
+
+# Keep _edit_distance as alias for backward compat (imported by tray.py, tests)
+_edit_distance = edit_distance
 
 
 class SubtitleListener:
@@ -173,8 +163,10 @@ class SubtitleListener:
         frame_heroes: dict[str, str] = {}
         for m in re.finditer(r"\[(\w+)\s+\(([^)]+)\)\]", text):
             username = m.group(1).upper()
-            hero = m.group(2).strip().title()
+            raw_hero = m.group(2).strip().title()
             if username != "ATHENA":
+                # Fuzzy-match to canonical hero name
+                hero = match_hero_name(raw_hero) or raw_hero
                 frame_heroes[username] = hero
 
         for username, hero in frame_heroes.items():

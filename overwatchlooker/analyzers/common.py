@@ -249,7 +249,7 @@ def merge_heroes(data: dict, hero_map: dict[str, str] | None = None,
     - 'extra_hero_stats' is consumed and removed from top-level
     - 'hero' field is removed from each player (heroes[] is canonical)
     """
-    from overwatchlooker.subtitle_listener import _edit_distance
+    from overwatchlooker.heroes import edit_distance as _edit_distance
 
     hero_history = hero_history or {}
     hero_map = hero_map or {}
