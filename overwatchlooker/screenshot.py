@@ -91,6 +91,22 @@ def get_latest_screenshot() -> Path | None:
     return latest
 
 
+def is_ow2_tab_screen_bgr(frame: np.ndarray) -> tuple[bool, str]:
+    """Fast check whether a BGR frame is an OW2 Tab scoreboard.
+
+    Works directly on a BGR numpy array, avoiding PNG encode/decode per frame.
+    Returns (True, "") if valid, or (False, reason) if rejected.
+    """
+    if frame is None or frame.size == 0:
+        return False, "empty frame"
+    h, w = frame.shape[:2]
+    strip = frame[int(0.02 * h):int(0.06 * h), int(0.35 * w):int(0.65 * w)]
+    unique = len(np.unique(strip.reshape(-1, 3), axis=0))
+    if unique <= 2:
+        return True, ""
+    return False, f"top strip has {unique} unique colors (max 2)"
+
+
 def is_ow2_tab_screen(png_bytes: bytes) -> tuple[bool, str]:
     """Fast check whether a screenshot is an OW2 Tab scoreboard.
 
@@ -104,14 +120,7 @@ def is_ow2_tab_screen(png_bytes: bytes) -> tuple[bool, str]:
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return False, "failed to decode image"
-    h, w = img.shape[:2]
-
-    # Middle 30% of top panel (y 2-6%) — avoids tabs on left and map text on right
-    strip = img[int(0.02 * h):int(0.06 * h), int(0.35 * w):int(0.65 * w)]
-    unique = len(np.unique(strip.reshape(-1, 3), axis=0))
-    if unique <= 2:
-        return True, ""
-    return False, f"top strip has {unique} unique colors (max 2)"
+    return is_ow2_tab_screen_bgr(img)
 
 
 def _find_overwatch_hwnd() -> int | None:

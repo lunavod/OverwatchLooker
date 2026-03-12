@@ -54,6 +54,13 @@ def main():
         action="store_true",
         help="Log subtitle OCR results to transcripts/ folder",
     )
+    parser.add_argument(
+        "--replay",
+        type=str,
+        default=None,
+        help="Replay a recording directory instead of live capture",
+    )
+    # --speed removed: tick-based replay always runs at max speed
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -140,6 +147,36 @@ def main():
         else:
             copy_to_clipboard(formatted)
             show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
+    elif args.replay:
+        from overwatchlooker.recording.replay import ReplaySource
+
+        replay_dir = Path(args.replay)
+        if not replay_dir.is_dir():
+            print_error(f"Recording directory not found: {replay_dir}")
+            sys.exit(1)
+
+        replay = ReplaySource(replay_dir)
+        print_status(f"Replaying {replay_dir.name} ({replay.duration:.0f}s, "
+                     f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
+
+        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript, replay_source=replay)
+        app._start_listening()
+
+        try:
+            app._tick_loop.run()  # blocks until replay exhausted
+        except KeyboardInterrupt:
+            if app._tick_loop:
+                app._tick_loop.stop()
+        finally:
+            # Wait for any in-progress analysis to finish
+            import time as _time
+            for _ in range(60):
+                if not app._analyzing:
+                    break
+                _time.sleep(1.0)
+            app._stop_listening()
+            replay.close()
+            print_status("Replay finished.")
     else:
         app = App(use_telegram=args.tg, use_mcp=args.mcp, use_audio=args.audio, use_transcript=args.transcript)
         app.run()

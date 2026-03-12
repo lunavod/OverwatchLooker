@@ -43,10 +43,110 @@ from overwatchlooker.heroes import edit_distance, match_hero_name
 _edit_distance = edit_distance
 
 
+class SubtitleState:
+    """Mutable state for subtitle processing."""
+
+    def __init__(self):
+        self.last_trigger_time: float = float("-inf")
+        self.hero_map: dict[str, str] = {}  # UPPERCASE username -> hero name
+        self.hero_history: dict[str, list[tuple[float, str]]] = {}  # username -> [(sim_time, hero)]
+        self.last_lines: set[str] = set()  # transcript dedup
+        self.transcript_file = None  # IO file or None
+
+
+def process_subtitle_frame(frame_bgr: np.ndarray, sim_time: float,
+                           state: SubtitleState) -> str | None:
+    """Process full frame for subtitles. Returns 'VICTORY'/'DEFEAT' or None.
+
+    Mutates state. Extracts subtitle region internally.
+    """
+    h, w = frame_bgr.shape[:2]
+    img = frame_bgr[int(h * _REGION_Y_START):int(h * _REGION_Y_END),
+                     int(w * _REGION_X_START):int(w * _REGION_X_END)]
+
+    # Cooldown check
+    if sim_time - state.last_trigger_time < AUDIO_COOLDOWN_SECONDS:
+        return None
+
+    # Stage 1: fast pixel check
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    bright = hsv[:, :, 2] >= _VALUE_MIN
+    white_mask = bright & (hsv[:, :, 1] <= _SAT_MAX_WHITE)
+    color_mask = bright & (hsv[:, :, 1] >= _SAT_MIN_COLOR)
+    text_mask = white_mask | color_mask
+    text_count = int(np.count_nonzero(text_mask))
+
+    if text_count < _PIXEL_THRESHOLD:
+        return None
+
+    _logger.debug(f"Subtitle: {text_count} text pixels detected, running OCR...")
+
+    # Stage 2: binarize and OCR
+    binary = np.zeros(img.shape[:2], dtype=np.uint8)
+    binary[text_mask] = 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    binary = cv2.dilate(binary, kernel, iterations=1)
+    binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
+
+    text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
+    _logger.debug(f"Subtitle OCR text: {text!r}")
+
+    # Extract username -> hero mappings
+    frame_heroes: dict[str, str] = {}
+    for m in re.finditer(r"\[(\w+)\s+\(([^)]+)\)\]", text):
+        username = m.group(1).upper()
+        raw_hero = m.group(2).strip().title()
+        if username != "ATHENA":
+            hero = match_hero_name(raw_hero) or raw_hero
+            frame_heroes[username] = hero
+
+    for username, hero in frame_heroes.items():
+        history = state.hero_history.get(username)
+        if history:
+            last_hero = history[-1][1]
+            if _edit_distance(hero.lower(), last_hero.lower()) <= 2:
+                continue
+        if username not in state.hero_history:
+            state.hero_history[username] = []
+        state.hero_history[username].append((sim_time, hero))
+        state.hero_map[username] = hero
+
+    # Transcript dedup
+    if state.transcript_file and text:
+        current_lines = set()
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if ln and re.match(r"\[.+\]", ln):
+                clean = re.sub(r"\s+[^\w\s()\[\]!?.,']{1,3}(\s+[^\w\s()\[\]!?.,']{1,3})*\s*$", "", ln)
+                current_lines.add(clean)
+        new_lines = current_lines - state.last_lines
+        state.last_lines = current_lines
+        if new_lines:
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            for ln in sorted(new_lines):
+                state.transcript_file.write(f"[{ts}] {ln}\n")
+            state.transcript_file.flush()
+
+    # Match Athena lines
+    result = None
+    if re.search(r"athena\W{0,3}\s*victory", text):
+        result = "VICTORY"
+    elif re.search(r"athena\W{0,3}\s*defeat", text):
+        result = "DEFEAT"
+
+    if result:
+        _logger.info(f"Subtitle detected: {result}")
+        state.last_trigger_time = sim_time
+
+    return result
+
+
 class SubtitleListener:
     """Monitors screen for VICTORY/DEFEAT subtitle text."""
 
-    def __init__(self, on_match: Callable[[str], None], transcript: bool = False):
+    def __init__(self, on_match: Callable[[str], None], transcript: bool = False,
+                 screen_provider=None, clock: Callable[[], float] | None = None):
         self._on_match = on_match
         self._running = False
         self._thread: threading.Thread | None = None
@@ -56,6 +156,8 @@ class SubtitleListener:
         self._last_lines: set[str] = set()  # lines from the previous OCR pass
         self._hero_map: dict[str, str] = {}  # UPPERCASE username -> hero name (Title Case)
         self._hero_history: dict[str, list[tuple[float, str]]] = {}  # username -> [(time, hero), ...]
+        self._screen_provider = screen_provider  # optional ReplaySource for replay mode
+        self._clock = clock or time.monotonic
 
     @property
     def hero_map(self) -> dict[str, str]:
@@ -86,8 +188,6 @@ class SubtitleListener:
             self._thread = None
 
     def _run(self) -> None:
-        import mss
-
         if self._transcript:
             transcript_dir = Path("transcripts")
             transcript_dir.mkdir(exist_ok=True)
@@ -98,13 +198,23 @@ class SubtitleListener:
         _logger.info("Subtitle listener started.")
 
         try:
-            with mss.mss() as sct:
+            if self._screen_provider:
+                # Replay mode: use replay-aware sleep so polls scale with speed
                 while self._running:
                     try:
-                        self._poll(sct)
+                        self._poll(None)
                     except Exception as e:
                         _logger.warning(f"Subtitle poll error: {e}")
-                    time.sleep(SUBTITLE_POLL_INTERVAL)
+                    self._screen_provider.sleep(SUBTITLE_POLL_INTERVAL)
+            else:
+                import mss
+                with mss.mss() as sct:
+                    while self._running:
+                        try:
+                            self._poll(sct)
+                        except Exception as e:
+                            _logger.warning(f"Subtitle poll error: {e}")
+                        time.sleep(SUBTITLE_POLL_INTERVAL)
         finally:
             if self._transcript_file:
                 self._transcript_file.close()
@@ -113,25 +223,30 @@ class SubtitleListener:
         _logger.info("Subtitle listener stopped.")
 
     def _poll(self, sct) -> None:
-        # Only poll when Overwatch is the active window
-        if _get_foreground_exe() != "overwatch.exe":
+        # Only poll when Overwatch is the active window (skip check in replay mode)
+        if not self._screen_provider and _get_foreground_exe() != "overwatch.exe":
             return
 
         # Cooldown check
-        now = time.monotonic()
+        now = self._clock()
         if now - self._last_trigger_time < AUDIO_COOLDOWN_SECONDS:
             return
 
         # Capture subtitle region
-        monitor = sct.monitors[MONITOR_INDEX]
-        x1 = int(monitor["left"] + monitor["width"] * _REGION_X_START)
-        x2 = int(monitor["left"] + monitor["width"] * _REGION_X_END)
-        y1 = int(monitor["top"] + monitor["height"] * _REGION_Y_START)
-        y2 = int(monitor["top"] + monitor["height"] * _REGION_Y_END)
+        if self._screen_provider:
+            img = self._screen_provider.get_region_bgr(
+                _REGION_X_START, _REGION_Y_START, _REGION_X_END, _REGION_Y_END
+            )
+        else:
+            monitor = sct.monitors[MONITOR_INDEX]
+            x1 = int(monitor["left"] + monitor["width"] * _REGION_X_START)
+            x2 = int(monitor["left"] + monitor["width"] * _REGION_X_END)
+            y1 = int(monitor["top"] + monitor["height"] * _REGION_Y_START)
+            y2 = int(monitor["top"] + monitor["height"] * _REGION_Y_END)
 
-        region = {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1}
-        grab = sct.grab(region)
-        img = np.array(grab)[:, :, :3]  # drop alpha, keep BGR
+            region = {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1}
+            grab = sct.grab(region)
+            img = np.array(grab)[:, :, :3]  # drop alpha, keep BGR
 
         # Stage 1: fast pixel check — detect bright white OR saturated color text
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -159,7 +274,7 @@ class SubtitleListener:
 
         # Extract username -> hero mappings from [USERNAME (HERO)] lines
         # Take only the last hero per player in this frame (newest subtitle)
-        now = time.monotonic()
+        now = self._clock()
         frame_heroes: dict[str, str] = {}
         for m in re.finditer(r"\[(\w+)\s+\(([^)]+)\)\]", text):
             username = m.group(1).upper()
@@ -210,5 +325,5 @@ class SubtitleListener:
 
         if result:
             _logger.info(f"Subtitle detected: {result}")
-            self._last_trigger_time = time.monotonic()
+            self._last_trigger_time = self._clock()
             self._on_match(result)

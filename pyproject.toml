@@ -23,6 +23,16 @@ dependencies = [
     "telethon>=1.37.0",
     "questionary>=2.1.1",
     "pytesseract>=0.3.13",
+    "dxcam>=0.3.0",
+    "lz4>=4.4.5",
+    "zstandard>=0.25.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "screenshots: requires real screenshots in tests/fixtures",
+    "live: calls real LLM APIs (opt-in, never runs by default)",
 ]
 
 [tool.uv.sources]
@@ -32,3 +42,9 @@ torchvision = { index = "pytorch-cu124" }
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-timeout>=2.4.0",
+]

@@ -1,0 +1,153 @@
+"""Replay a recorded session, feeding frames and events to the app pipeline."""
+
+import json
+import logging
+import struct
+from pathlib import Path
+
+import cv2
+import numpy as np
+import zstandard as zstd
+
+_logger = logging.getLogger("overwatchlooker")
+
+
+class FrameReader:
+    """Reads frames sequentially from a frames.bin (zstd) or video.mkv file."""
+
+    def __init__(self, recording_dir: Path, meta: dict):
+        self._resolution = tuple(meta["resolution"])
+        w, h = self._resolution
+        self._frame_shape = (h, w, 3)
+        self._frame_count = meta["frame_count"]
+        self._fps = meta["fps"]
+        self._read = 0
+
+        frames_path = recording_dir / "frames.bin"
+        video_path = recording_dir / "video.mkv"
+
+        if frames_path.exists():
+            self._mode = "zstd"
+            self._file = open(frames_path, "rb")
+            self._decompressor = zstd.ZstdDecompressor()
+            self._cap = None
+        elif video_path.exists():
+            self._mode = "video"
+            self._cap = cv2.VideoCapture(str(video_path))
+            if not self._cap.isOpened():
+                raise RuntimeError(f"Failed to open {video_path}")
+            self._file = None
+            self._decompressor = None
+        else:
+            raise FileNotFoundError(
+                f"No frames.bin or video.mkv in {recording_dir}"
+            )
+
+        _logger.info(f"Frame reader: {self._mode} format")
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
+
+    def read_next(self) -> np.ndarray | None:
+        """Read next frame sequentially. Returns None when exhausted."""
+        if self._read >= self._frame_count:
+            return None
+        self._read += 1
+
+        if self._mode == "zstd":
+            return self._read_zstd()
+        else:
+            return self._read_video()
+
+    def _read_zstd(self) -> np.ndarray | None:
+        header = self._file.read(4)
+        if len(header) < 4:
+            return None
+        length = struct.unpack("<I", header)[0]
+        compressed = self._file.read(length)
+        if len(compressed) < length:
+            return None
+        raw = self._decompressor.decompress(compressed)
+        return np.frombuffer(raw, dtype=np.uint8).reshape(self._frame_shape)
+
+    def _read_video(self) -> np.ndarray | None:
+        ok, frame = self._cap.read()
+        if not ok:
+            return None
+        return frame
+
+    def close(self) -> None:
+        if self._file:
+            self._file.close()
+            self._file = None
+        if self._cap:
+            self._cap.release()
+            self._cap = None
+
+
+class ReplaySource:
+    """Loads a recording and provides frame access + event scheduling."""
+
+    def __init__(self, recording_dir: Path):
+        self._dir = recording_dir
+
+        # Load meta
+        meta_path = recording_dir / "meta.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(f"No meta.json in {recording_dir}")
+        self._meta = json.loads(meta_path.read_text("utf-8"))
+        self._fps = self._meta["fps"]
+        self._frame_count = self._meta["frame_count"]
+        self._resolution = tuple(self._meta["resolution"])
+        self._duration = self._meta["duration_seconds"]
+
+        # Frame reader (handles both zstd and video formats)
+        self._reader = FrameReader(recording_dir, self._meta)
+
+        # Load events
+        events_path = recording_dir / "events.jsonl"
+        self._events = []
+        if events_path.exists():
+            for line in events_path.read_text("utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    self._events.append(json.loads(line))
+            self._events.sort(key=lambda e: e.get("frame", 0))
+
+        _logger.info(
+            f"Replay loaded: {self._frame_count} frames, {self._duration:.1f}s, "
+            f"{self._resolution[0]}x{self._resolution[1]}"
+        )
+
+    @property
+    def meta(self) -> dict:
+        return dict(self._meta)
+
+    @property
+    def duration(self) -> float:
+        return self._duration
+
+    @property
+    def resolution(self) -> tuple[int, int]:
+        return self._resolution
+
+    @property
+    def fps(self) -> int:
+        return self._fps
+
+    @property
+    def frame_count(self) -> int:
+        return self._frame_count
+
+    @property
+    def reader(self) -> FrameReader:
+        return self._reader
+
+    @property
+    def events(self) -> list[dict]:
+        return list(self._events)
+
+    def close(self) -> None:
+        """Release resources."""
+        self._reader.close()

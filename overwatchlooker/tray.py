@@ -10,15 +10,11 @@ from overwatchlooker.config import ANALYZER, SCREENSHOT_MAX_AGE_SECONDS
 from overwatchlooker.display import print_analysis, print_error, print_status
 
 _logger = logging.getLogger("overwatchlooker")
-from overwatchlooker.hotkey import HotkeyListener
 from overwatchlooker.notification import copy_to_clipboard, show_notification
 from overwatchlooker.screenshot import (
-    capture_monitor,
     crop_hero_panel,
     has_hero_panel,
-    is_ow2_tab_screen,
     ocr_hero_name,
-    save_screenshot,
 )
 from overwatchlooker.heroes import edit_distance as _edit_distance
 
@@ -41,84 +37,48 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 
 class App:
-    def __init__(self, use_telegram: bool = False, use_mcp: bool = False, use_audio: bool = False, use_transcript: bool = False):
+    def __init__(self, use_telegram: bool = False, use_mcp: bool = False,
+                 use_audio: bool = False, use_transcript: bool = False,
+                 replay_source=None):
         self._active = False
-        self._hotkey: HotkeyListener | None = None
-        self._detector = None  # SubtitleListener or AudioListener
+        self._detector = None  # SubtitleSystem or AudioListener
         self._analyzing = False
         self._lock = threading.Lock()
         self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
         self._hero_crops: dict[str, bytes] = {}  # hero_name -> cropped PNG bytes
-        self._tab_pending = False  # debounce flag
-        self._tab_held = False
         self._use_telegram = use_telegram
         self._use_mcp = use_mcp
         self._use_audio = use_audio
         self._use_transcript = use_transcript
+        self._replay_source = replay_source  # ReplaySource for replay mode
+        self._recorder = None  # Recorder for recording mode
+        self._tick_loop = None  # TickLoop instance
 
-    def _on_tab_press(self) -> None:
-        """Tab press: capture screenshots while held, retrying until valid."""
+    def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str) -> None:
+        """Store a valid Tab screenshot (called by TabCaptureSystem).
+
+        timestamp is time.monotonic() in live mode, sim_time in replay mode.
+        """
         with self._lock:
-            if self._tab_pending:
-                return
-            self._tab_pending = True
-            self._tab_held = True
+            self._valid_tabs.append((png_bytes, timestamp, filename))
+            if len(self._valid_tabs) > 2:
+                self._valid_tabs.pop(0)
+        print_status(f"Tab screenshot saved: {filename}")
 
-        def _capture_loop():
-            try:
-                time.sleep(1.0)
-                got_valid = False
-                while True:
-                    with self._lock:
-                        if not self._tab_held:
-                            break
-                    png_bytes = capture_monitor()
-                    saved_path = save_screenshot(png_bytes)
-                    is_tab, tab_reason = is_ow2_tab_screen(png_bytes)
-                    if is_tab:
-                        with self._lock:
-                            self._valid_tabs.append((png_bytes, time.monotonic(), saved_path.name))
-                            if len(self._valid_tabs) > 2:
-                                self._valid_tabs.pop(0)
-                        # Try to capture hero panel crop
-                        if has_hero_panel(png_bytes):
-                            crop = crop_hero_panel(png_bytes)
-                            name = ocr_hero_name(crop)
-                            if name:
-                                with self._lock:
-                                    if not any(_edit_distance(name.lower(), k.lower()) <= 2
-                                               for k in self._hero_crops):
-                                        self._hero_crops[name] = crop
-                                        _logger.info(f"Stored hero crop: {name}")
-                                    else:
-                                        _logger.debug(f"Hero crop dedup skip: {name}")
-                            else:
-                                _logger.debug("Hero panel found but OCR failed to read name")
-                        print_status(f"Tab screenshot saved to {saved_path}")
-                        got_valid = True
-                        break
-                    else:
-                        _logger.info(f"Tab screen rejected: {tab_reason} ({saved_path.name})")
-                        print_status(f"Screenshot saved (not a Tab screen): {saved_path}")
-                    time.sleep(0.5)
-                if not got_valid:
-                    # Tab released before we got a valid screenshot — save last capture anyway
-                    print_status("Tab released without valid Tab screen capture.")
-            except Exception as e:
-                print_error(f"Screenshot capture failed: {e}")
-            finally:
-                time.sleep(0.5)
-                with self._lock:
-                    self._tab_pending = False
-
-        threading.Thread(target=_capture_loop, daemon=True).start()
-
-    def _on_tab_release(self) -> None:
+    def store_hero_crop(self, name: str, crop: bytes) -> None:
+        """Store a hero panel crop (called by TabCaptureSystem)."""
         with self._lock:
-            self._tab_held = False
+            if not any(_edit_distance(name.lower(), k.lower()) <= 2
+                       for k in self._hero_crops):
+                self._hero_crops[name] = crop
+                _logger.info(f"Stored hero crop: {name}")
+            else:
+                _logger.debug(f"Hero crop dedup skip: {name}")
 
-    def _on_detection(self, result: str) -> None:
+    def _on_detection(self, result: str, detection_time: float = 0.0) -> None:
         """Subtitle or audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
+        if self._recorder:
+            self._recorder.log_event("detection", result=result)
         with self._lock:
             if self._analyzing:
                 print_status("Analysis already in progress, ignoring detection trigger.")
@@ -138,18 +98,23 @@ class App:
             self._detector.reset_match()
 
         thread = threading.Thread(target=self._run_analysis,
-                                  args=(result, hero_map, hero_history, hero_crops), daemon=True)
+                                  args=(result, detection_time, hero_map, hero_history, hero_crops), daemon=True)
         thread.start()
 
-    def _run_analysis(self, detection_result: str, hero_map: dict[str, str] | None = None,
+    def _run_analysis(self, detection_result: str, detection_time: float = 0.0,
+                      hero_map: dict[str, str] | None = None,
                       hero_history: dict[str, list[tuple[float, str]]] | None = None,
                       hero_crops: dict[str, bytes] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
-            print_status(f"Detected: {detection_result}. "
-                         f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
+            if self._replay_source:
+                print_status(f"Detected: {detection_result}. Analyzing...")
+            else:
+                print_status(f"Detected: {detection_result}. "
+                             f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
+                time.sleep(_AUDIO_ANALYSIS_DELAY)
+                detection_time += _AUDIO_ANALYSIS_DELAY
             show_notification("OverwatchLooker", f"{detection_result} detected! Analyzing...")
-            time.sleep(_AUDIO_ANALYSIS_DELAY)
 
             with self._lock:
                 tabs = list(self._valid_tabs)
@@ -161,7 +126,7 @@ class App:
 
             # Try most recent first, then fall back to previous
             for i, (png_bytes, tab_time, filename) in enumerate(reversed(tabs)):
-                age = time.monotonic() - tab_time
+                age = detection_time - tab_time
                 if age > SCREENSHOT_MAX_AGE_SECONDS:
                     continue
 
@@ -267,30 +232,73 @@ class App:
                 print_error("Telegram: --tg flag set but TELEGRAM_API_ID, TELEGRAM_API_HASH, or TELEGRAM_CHANNEL missing in .env")
         else:
             print_status("Telegram: OFF")
-        self._hotkey = HotkeyListener(on_tab_press=self._on_tab_press,
-                                      on_tab_release=self._on_tab_release)
-        self._hotkey.start()
+
+        from overwatchlooker.tick import (
+            LiveFrameSource, LiveInputSource, ReplayFrameSource, ReplayInputSource,
+            SubtitleSystem, TabCaptureSystem, TickLoop,
+        )
+        from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
+
+        if self._replay_source:
+            fps = self._replay_source.fps
+            frame_source = ReplayFrameSource(self._replay_source.reader)
+            input_source = ReplayInputSource(self._replay_source.events)
+            detect_mode = "replay"
+        else:
+            fps = 10
+            frame_source = LiveFrameSource(fps)
+            input_source = LiveInputSource()
+            detect_mode = "subtitle"
+
+        self._tick_loop = TickLoop(fps, frame_source, input_source)
+
+        tab_system = TabCaptureSystem(self, fps=fps)
+        self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
+
         if self._use_audio:
             from overwatchlooker.audio_listener import AudioListener
-            self._detector = AudioListener(on_match=self._on_detection)
+
+            def _audio_on_match(result: str) -> None:
+                # Audio runs outside the tick loop; approximate sim_time from tick count
+                tick_loop = self._tick_loop
+                if tick_loop:
+                    sim_time = tick_loop._current_tick / tick_loop.fps
+                else:
+                    sim_time = 0.0
+                self._on_detection(result, sim_time)
+
+            self._detector = AudioListener(on_match=_audio_on_match)
+            self._detector.start()
+            self._subtitle_system = None
             detect_mode = "audio"
         else:
-            from overwatchlooker.subtitle_listener import SubtitleListener
-            self._detector = SubtitleListener(on_match=self._on_detection, transcript=self._use_transcript)
-            detect_mode = "subtitle"
-        self._detector.start()
+            subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+            subtitle_system = SubtitleSystem(on_match=self._on_detection,
+                                             transcript=self._use_transcript)
+            self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
+            self._detector = subtitle_system
+            self._subtitle_system = subtitle_system
+
+        if not self._replay_source:
+            # Live mode: run tick loop in daemon thread
+            tick_thread = threading.Thread(target=self._tick_loop.run, daemon=True)
+            tick_thread.start()
+
         print_status(f"Listening (analyzer={ANALYZER}, detection={detect_mode}). Tab=screenshot.")
 
     def _stop_listening(self) -> None:
         if not self._active:
             return
         self._active = False
-        if self._hotkey:
-            self._hotkey.stop()
-            self._hotkey = None
-        if self._detector:
+        if self._tick_loop:
+            self._tick_loop.stop()
+            self._tick_loop = None
+        if hasattr(self, '_subtitle_system') and self._subtitle_system:
+            self._subtitle_system.close()
+            self._subtitle_system = None
+        if self._detector and hasattr(self._detector, 'stop'):
             self._detector.stop()
-            self._detector = None
+        self._detector = None
         print_status("Stopped listening.")
 
     def _on_submit_tab(self, result: str) -> None:
@@ -312,8 +320,9 @@ class App:
         if hasattr(self._detector, "reset_match"):
             self._detector.reset_match()
 
+        detection_time = self._tick_loop._current_tick / self._tick_loop.fps if self._tick_loop else 0.0
         thread = threading.Thread(target=self._run_analysis,
-                                  args=(result, hero_map, hero_history, hero_crops), daemon=True)
+                                  args=(result, detection_time, hero_map, hero_history, hero_crops), daemon=True)
         thread.start()
 
     def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
@@ -322,7 +331,54 @@ class App:
     def _on_submit_loss(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         self._on_submit_tab("DEFEAT")
 
+    def _on_toggle_recording(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        """Toggle screen recording on/off."""
+        if self._recorder and self._recorder.is_recording:
+            try:
+                output = self._recorder.stop()
+                if self._tick_loop:
+                    self._tick_loop.on_frame = None
+                    self._tick_loop.on_key_events = None
+                self._recorder = None
+                print_status(f"Recording saved to {output}")
+                show_notification("OverwatchLooker", f"Recording saved.")
+            except Exception as e:
+                print_error(f"Failed to stop recording: {e}")
+        else:
+            try:
+                from overwatchlooker.recording.recorder import Recorder
+                self._recorder = Recorder()
+                # Get resolution from the last captured frame or use a default
+                resolution = (3840, 2160)
+                if self._tick_loop and self._tick_loop.frame_source:
+                    src = self._tick_loop.frame_source
+                    if hasattr(src, '_camera') and src._camera:
+                        import dxcam
+                        frame = src._camera.grab()
+                        if frame is not None:
+                            h, w = frame.shape[:2]
+                            resolution = (w, h)
+                output = self._recorder.start(resolution)
+                if self._tick_loop:
+                    self._tick_loop.on_frame = self._recorder.push_frame
+                    self._tick_loop.on_key_events = self._recorder.log_key_events
+                print_status(f"Recording to {output}")
+                show_notification("OverwatchLooker", "Recording started.")
+            except Exception as e:
+                print_error(f"Failed to start recording: {e}")
+                self._recorder = None
+        self._rebuild_menu()
+
     def _on_quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        if self._recorder and self._recorder.is_recording:
+            try:
+                if self._tick_loop:
+                    self._tick_loop.on_frame = None
+                    self._tick_loop.on_key_events = None
+                self._recorder.stop()
+            except Exception:
+                pass
+            self._recorder = None
         self._stop_listening()
         icon.stop()
 
@@ -341,8 +397,10 @@ class App:
     def _rebuild_menu(self) -> None:
         """Rebuild the tray menu to reflect current state."""
         label = "Stop Listening" if self._active else "Start Listening"
+        rec_label = "Stop Recording" if (self._recorder and self._recorder.is_recording) else "Start Recording"
         self._icon.menu = pystray.Menu(
             pystray.MenuItem(label, self._on_toggle, default=True),
+            pystray.MenuItem(rec_label, self._on_toggle_recording),
             pystray.MenuItem("Submit last tab (win)", self._on_submit_win),
             pystray.MenuItem("Submit last tab (loss)", self._on_submit_loss),
             pystray.MenuItem("Quit", self._on_quit),
@@ -357,6 +415,7 @@ class App:
             title="OverwatchLooker",
             menu=pystray.Menu(
                 pystray.MenuItem("Stop Listening", self._on_toggle, default=True),
+                pystray.MenuItem("Start Recording", self._on_toggle_recording),
                 pystray.MenuItem("Submit last tab (win)", self._on_submit_win),
                 pystray.MenuItem("Submit last tab (loss)", self._on_submit_loss),
                 pystray.MenuItem("Quit", self._on_quit),
@@ -387,6 +446,12 @@ class App:
 
     def _shutdown(self) -> None:
         print_status("Shutting down...")
+        if self._recorder and self._recorder.is_recording:
+            try:
+                self._recorder.stop()
+                print_status("Recording saved on shutdown.")
+            except Exception:
+                pass
         self._stop_listening()
         if self._icon:
             self._icon.stop()

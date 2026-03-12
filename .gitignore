@@ -19,6 +19,7 @@ wheels/
 *.jpeg
 *.png
 *.gif
+!tests/fixtures/*.png
 
 # Logs
 *.log
@@ -34,3 +35,7 @@ cache/
 batch_out/
 batch_*.json
 batch_*.py
+
+# Recordings
+recordings/
+*.mkv
