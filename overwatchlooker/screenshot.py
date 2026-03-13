@@ -2,6 +2,7 @@ import ctypes
 import ctypes.wintypes
 import io
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -11,12 +12,13 @@ import mss.tools
 import numpy as np
 from PIL import Image
 
-import pytesseract
+from pytesseract_api import image_to_string as _tess_image_to_string, TessPageSegMode, set_variable
 
 from overwatchlooker.config import MONITOR_INDEX, SCREENSHOT_MAX_AGE_SECONDS
 
-# Point pytesseract at the Windows install path
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# Tesseract C API paths (ctypes, no subprocess)
+_TESS_LIB = r"C:\Program Files\Tesseract-OCR\libtesseract-5.dll"
+_TESS_DATA = r"C:\Program Files\Tesseract-OCR\tessdata"
 
 _logger = logging.getLogger("overwatchlooker")
 _user32 = ctypes.windll.user32
@@ -292,10 +294,18 @@ def ocr_hero_name(crop_png_bytes: bytes) -> str:
     _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
 
     try:
-        text = pytesseract.image_to_string(
-            binary,
-            config="--psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ.",
-        ).strip()
+        old_stderr = os.dup(2)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+        try:
+            text = _tess_image_to_string(
+                binary, psm=TessPageSegMode.PSM_SINGLE_LINE,
+                lib_path=_TESS_LIB, tessdata_path=_TESS_DATA,
+            ).strip()
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+            os.close(devnull)
     except Exception as e:
         _logger.warning(f"Hero name OCR failed: {e}")
         return ""
