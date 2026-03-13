@@ -22,10 +22,10 @@ dependencies = [
     "litellm>=1.81.14",
     "telethon>=1.37.0",
     "questionary>=2.1.1",
-    "pytesseract>=0.3.13",
     "dxcam>=0.3.0",
     "lz4>=4.4.5",
     "zstandard>=0.25.0",
+    "pytesseract-api>=1.0.4",
 ]
 
 [tool.pytest.ini_options]
@@ -36,12 +36,12 @@ markers = [
 ]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu124" }
-torchvision = { index = "pytorch-cu124" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 
 [dependency-groups]
 dev = [

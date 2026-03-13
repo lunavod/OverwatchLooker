@@ -55,7 +55,11 @@ def main():
         default=None,
         help="Replay a recording directory instead of live capture",
     )
-    # --speed removed: tick-based replay always runs at max speed
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Skip decompressing frames to disk cache (slower replay)",
+    )
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -144,7 +148,7 @@ def main():
             print_error(f"Recording directory not found: {replay_dir}")
             sys.exit(1)
 
-        replay = ReplaySource(replay_dir)
+        replay = ReplaySource(replay_dir, no_cache=args.no_cache)
         print_status(f"Replaying {replay_dir.name} ({replay.duration:.0f}s, "
                      f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
 

@@ -12,24 +12,71 @@ import zstandard as zstd
 _logger = logging.getLogger("overwatchlooker")
 
 
-class FrameReader:
-    """Reads frames sequentially from a frames.bin (zstd) or video.mkv file."""
+def _ensure_raw_frames(recording_dir: Path, meta: dict) -> Path:
+    """Decompress frames.bin → frames.raw if not already done. Returns path to raw file."""
+    raw_path = recording_dir / "frames.raw"
+    frames_path = recording_dir / "frames.bin"
 
-    def __init__(self, recording_dir: Path, meta: dict):
+    if raw_path.exists():
+        expected_size = meta["frame_count"] * meta["resolution"][0] * meta["resolution"][1] * 3
+        if raw_path.stat().st_size == expected_size:
+            return raw_path
+        _logger.warning("frames.raw size mismatch, regenerating")
+
+    if not frames_path.exists():
+        raise FileNotFoundError(f"No frames.bin in {recording_dir}")
+
+    w, h = meta["resolution"]
+    frame_bytes = h * w * 3
+    frame_count = meta["frame_count"]
+    _logger.info(f"Decompressing {frame_count} frames to frames.raw...")
+
+    decompressor = zstd.ZstdDecompressor()
+    with open(frames_path, "rb") as src, open(raw_path, "wb") as dst:
+        for i in range(frame_count):
+            header = src.read(4)
+            if len(header) < 4:
+                break
+            length = struct.unpack("<I", header)[0]
+            compressed = src.read(length)
+            if len(compressed) < length:
+                break
+            raw = decompressor.decompress(compressed)
+            dst.write(raw)
+
+    _logger.info(f"Decompressed to {raw_path} ({raw_path.stat().st_size / 1024 / 1024:.0f} MB)")
+    return raw_path
+
+
+class FrameReader:
+    """Reads frames sequentially from memory-mapped raw frames, zstd, or video."""
+
+    def __init__(self, recording_dir: Path, meta: dict, no_cache: bool = False):
         self._resolution = tuple(meta["resolution"])
         w, h = self._resolution
         self._frame_shape = (h, w, 3)
         self._frame_count = meta["frame_count"]
         self._fps = meta["fps"]
         self._read = 0
+        self._frame_bytes = h * w * 3
 
         frames_path = recording_dir / "frames.bin"
         video_path = recording_dir / "video.mkv"
 
-        if frames_path.exists():
+        # Priority: raw mmap > zstd decompress-then-mmap > video
+        if frames_path.exists() and not no_cache:
+            raw_path = _ensure_raw_frames(recording_dir, meta)
+            self._mode = "mmap"
+            self._mmap = np.memmap(str(raw_path), dtype=np.uint8, mode="r",
+                                   shape=(self._frame_count, *self._frame_shape))
+            self._file = None
+            self._decompressor = None
+            self._cap = None
+        elif frames_path.exists():
             self._mode = "zstd"
             self._file = open(frames_path, "rb")
             self._decompressor = zstd.ZstdDecompressor()
+            self._mmap = None
             self._cap = None
         elif video_path.exists():
             self._mode = "video"
@@ -38,6 +85,7 @@ class FrameReader:
                 raise RuntimeError(f"Failed to open {video_path}")
             self._file = None
             self._decompressor = None
+            self._mmap = None
         else:
             raise FileNotFoundError(
                 f"No frames.bin or video.mkv in {recording_dir}"
@@ -53,12 +101,16 @@ class FrameReader:
         """Read next frame sequentially. Returns None when exhausted."""
         if self._read >= self._frame_count:
             return None
-        self._read += 1
 
-        if self._mode == "zstd":
-            return self._read_zstd()
+        if self._mode == "mmap":
+            frame = np.array(self._mmap[self._read])
+        elif self._mode == "zstd":
+            frame = self._read_zstd()
         else:
-            return self._read_video()
+            frame = self._read_video()
+
+        self._read += 1
+        return frame
 
     def _read_zstd(self) -> np.ndarray | None:
         header = self._file.read(4)
@@ -84,12 +136,13 @@ class FrameReader:
         if self._cap:
             self._cap.release()
             self._cap = None
+        self._mmap = None
 
 
 class ReplaySource:
     """Loads a recording and provides frame access + event scheduling."""
 
-    def __init__(self, recording_dir: Path):
+    def __init__(self, recording_dir: Path, no_cache: bool = False):
         self._dir = recording_dir
 
         # Load meta
@@ -103,7 +156,7 @@ class ReplaySource:
         self._duration = self._meta["duration_seconds"]
 
         # Frame reader (handles both zstd and video formats)
-        self._reader = FrameReader(recording_dir, self._meta)
+        self._reader = FrameReader(recording_dir, self._meta, no_cache=no_cache)
 
         # Load events
         events_path = recording_dir / "events.jsonl"

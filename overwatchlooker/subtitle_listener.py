@@ -8,9 +8,12 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+import os
+import sys
+
 import cv2
 import numpy as np
-import pytesseract
+from pytesseract_api import image_to_string as _tess_image_to_string, TessPageSegMode
 
 from overwatchlooker.hotkey import _get_foreground_exe
 from overwatchlooker.config import (
@@ -21,8 +24,27 @@ from overwatchlooker.config import (
 
 _logger = logging.getLogger("overwatchlooker")
 
-# Point pytesseract at the Windows install path
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# Tesseract C API paths (ctypes, no subprocess)
+_TESS_LIB = r"C:\Program Files\Tesseract-OCR\libtesseract-5.dll"
+_TESS_DATA = r"C:\Program Files\Tesseract-OCR\tessdata"
+
+# Open /dev/null once for stderr suppression
+_devnull_fd = os.open(os.devnull, os.O_WRONLY)
+
+
+def _ocr(binary: np.ndarray) -> str:
+    """Run Tesseract on a binary image via C API. Returns lowercase text."""
+    # Suppress Tesseract's noisy C-level stderr warnings
+    old_stderr = os.dup(2)
+    os.dup2(_devnull_fd, 2)
+    try:
+        return _tess_image_to_string(
+            binary, psm=TessPageSegMode.PSM_SINGLE_BLOCK,
+            lib_path=_TESS_LIB, tessdata_path=_TESS_DATA,
+        ).strip().lower()
+    finally:
+        os.dup2(old_stderr, 2)
+        os.close(old_stderr)
 
 # Subtitle region: bottom of screen, above HUD ability bar
 _REGION_Y_START = 0.88
@@ -87,7 +109,7 @@ def process_subtitle_frame(frame_bgr: np.ndarray, sim_time: float,
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
     binary = cv2.dilate(binary, kernel, iterations=1)
 
-    text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
+    text = _ocr(binary)
     _logger.debug(f"Subtitle OCR text: {text!r}")
 
     # Extract username -> hero mappings
@@ -264,10 +286,8 @@ class SubtitleListener:
         binary[text_mask] = 255
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         binary = cv2.dilate(binary, kernel, iterations=1)
-        binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-        _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
 
-        text = pytesseract.image_to_string(binary, config="--psm 6").strip().lower()
+        text = _ocr(binary)
         _logger.debug(f"Subtitle OCR text: {text!r}")
 
         # Extract username -> hero mappings from [USERNAME (HERO)] lines
