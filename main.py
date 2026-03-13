@@ -167,6 +167,11 @@ def main():
             if app._tick_loop:
                 app._tick_loop.stop()
         finally:
+            # Flush any pending detection that didn't fire before replay ended
+            if hasattr(app, '_subtitle_system') and app._subtitle_system:
+                final_sim_time = replay.frame_count / replay.fps
+                app._subtitle_system.flush_pending(final_sim_time)
+
             # Wait for any in-progress analysis to finish
             import time as _time
             for _ in range(60):

@@ -5,7 +5,6 @@ import logging
 import struct
 from pathlib import Path
 
-import cv2
 import numpy as np
 import zstandard as zstd
 
@@ -64,7 +63,7 @@ def _ensure_raw_frames(recording_dir: Path, meta: dict) -> Path:
 
 
 class FrameReader:
-    """Reads frames sequentially from memory-mapped raw frames, zstd, or video."""
+    """Reads frames sequentially from raw or zstd-compressed frames."""
 
     def __init__(self, recording_dir: Path, meta: dict, no_cache: bool = False):
         self._resolution = tuple(meta["resolution"])
@@ -77,9 +76,8 @@ class FrameReader:
 
         raw_path = recording_dir / "frames.raw"
         frames_path = recording_dir / "frames.bin"
-        video_path = recording_dir / "video.mkv"
 
-        # Priority: raw file > zstd (decompress to raw first) > video
+        # Priority: raw file > zstd (decompress to raw first)
         if raw_path.exists():
             self._validate_raw(raw_path, meta)
             self._mode = "raw"
@@ -87,7 +85,6 @@ class FrameReader:
             self._frame_count = meta["frame_count"]
             self._file = None
             self._decompressor = None
-            self._cap = None
         elif frames_path.exists() and not no_cache:
             _ensure_raw_frames(recording_dir, meta)
             self._mode = "raw"
@@ -95,24 +92,14 @@ class FrameReader:
             self._frame_count = meta["frame_count"]
             self._file = None
             self._decompressor = None
-            self._cap = None
         elif frames_path.exists():
             self._mode = "zstd"
             self._file = open(frames_path, "rb")
             self._decompressor = zstd.ZstdDecompressor()
             self._raw_file = None
-            self._cap = None
-        elif video_path.exists():
-            self._mode = "video"
-            self._cap = cv2.VideoCapture(str(video_path))
-            if not self._cap.isOpened():
-                raise RuntimeError(f"Failed to open {video_path}")
-            self._file = None
-            self._decompressor = None
-            self._raw_file = None
         else:
             raise FileNotFoundError(
-                f"No frames.bin or video.mkv in {recording_dir}"
+                f"No frames.bin in {recording_dir}"
             )
 
         _logger.info(f"Frame reader: {self._mode} format")
@@ -145,10 +132,8 @@ class FrameReader:
 
         if self._mode == "raw":
             frame = self._read_raw()
-        elif self._mode == "zstd":
-            frame = self._read_zstd()
         else:
-            frame = self._read_video()
+            frame = self._read_zstd()
 
         self._read += 1
         return frame
@@ -170,22 +155,13 @@ class FrameReader:
         raw = self._decompressor.decompress(compressed)
         return np.frombuffer(raw, dtype=np.uint8).reshape(self._frame_shape)
 
-    def _read_video(self) -> np.ndarray | None:
-        ok, frame = self._cap.read()
-        if not ok:
-            return None
-        return frame
-
     def close(self) -> None:
         if hasattr(self, '_raw_file') and self._raw_file:
             self._raw_file.close()
             self._raw_file = None
-        if self._file:
+        if hasattr(self, '_file') and self._file:
             self._file.close()
             self._file = None
-        if self._cap:
-            self._cap.release()
-            self._cap = None
 
 
 class ReplaySource:

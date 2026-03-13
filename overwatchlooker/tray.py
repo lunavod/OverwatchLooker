@@ -1,6 +1,5 @@
 import logging
 import threading
-import time
 import traceback
 
 import pystray
@@ -75,12 +74,19 @@ class App:
             else:
                 _logger.debug(f"Hero crop dedup skip: {name}")
 
-    def _on_detection(self, result: str, detection_time: float = 0.0) -> None:
-        """Subtitle or audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
+    def _on_detected(self, result: str, detection_time: float = 0.0) -> None:
+        """Immediate callback when VICTORY/DEFEAT is first detected."""
         if self._recorder:
             self._recorder.log_event("detection", result=result)
+        show_notification("OverwatchLooker", f"{result} detected! Analyzing...")
         if self._no_analysis:
             print_status(f"Detected: {result} (analysis skipped)")
+        else:
+            print_status(f"Detected: {result}. Analyzing after delay...")
+
+    def _on_detection(self, result: str, detection_time: float = 0.0) -> None:
+        """Delayed callback: start analysis after the tick-based delay has elapsed."""
+        if self._no_analysis:
             return
         with self._lock:
             if self._analyzing:
@@ -110,14 +116,7 @@ class App:
                       hero_crops: dict[str, bytes] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
-            show_notification("OverwatchLooker", f"{detection_result} detected! Analyzing...")
-            if self._replay_source:
-                print_status(f"Detected: {detection_result}. Analyzing...")
-            else:
-                print_status(f"Detected: {detection_result}. "
-                             f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
-                time.sleep(_AUDIO_ANALYSIS_DELAY)
-                detection_time += _AUDIO_ANALYSIS_DELAY
+            print_status(f"Analyzing {detection_result}...")
 
             with self._lock:
                 tabs = list(self._valid_tabs)
@@ -252,8 +251,11 @@ class App:
         self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
 
         subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+        detection_delay = int(fps * _AUDIO_ANALYSIS_DELAY)
         subtitle_system = SubtitleSystem(on_match=self._on_detection,
-                                         transcript=self._use_transcript)
+                                         on_detected=self._on_detected,
+                                         transcript=self._use_transcript,
+                                         detection_delay_ticks=detection_delay)
         self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
         self._detector = subtitle_system
         self._subtitle_system = subtitle_system

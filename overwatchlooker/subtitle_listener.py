@@ -143,7 +143,8 @@ def process_subtitle_frame(frame_bgr: np.ndarray, sim_time: float,
         new_lines = current_lines - state.last_lines
         state.last_lines = current_lines
         if new_lines:
-            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            mins, secs = divmod(int(sim_time), 60)
+            ts = f"{mins}:{secs:02d}"
             for ln in sorted(new_lines):
                 state.transcript_file.write(f"[{ts}] {ln}\n")
             state.transcript_file.flush()

@@ -54,10 +54,14 @@ def get_screenshots_dir() -> Path:
     return folder
 
 
-def save_screenshot(png_bytes: bytes) -> Path:
-    """Save screenshot to Pictures/OverwatchLooker with a timestamp filename."""
+def save_screenshot(png_bytes: bytes, tick: int | None = None) -> Path:
+    """Save screenshot to Pictures/OverwatchLooker with a timestamp filename.
+
+    When tick is provided, it's appended to avoid collisions during fast replay.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    path = get_screenshots_dir() / f"{timestamp}.png"
+    name = f"{timestamp}_t{tick}" if tick is not None else timestamp
+    path = get_screenshots_dir() / f"{name}.png"
     path.write_bytes(png_bytes)
     return path
 

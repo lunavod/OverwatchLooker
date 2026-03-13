@@ -251,7 +251,7 @@ class TabCaptureSystem:
             is_tab, reason = is_ow2_tab_screen_bgr(ctx.frame_bgr)
             if is_tab:
                 png_bytes = cv2.imencode(".png", ctx.frame_bgr)[1].tobytes()
-                saved_path = save_screenshot(png_bytes)
+                saved_path = save_screenshot(png_bytes, tick=ctx.tick)
                 self._app.store_valid_tab(png_bytes, ctx.sim_time, saved_path.name)
                 if has_hero_panel(png_bytes):
                     crop = crop_hero_panel(png_bytes)
@@ -293,9 +293,13 @@ class TabCaptureSystem:
 class SubtitleSystem:
     """OCR subtitle detection, runs every N ticks."""
 
-    def __init__(self, on_match, transcript: bool = False):
+    def __init__(self, on_match, on_detected=None, transcript: bool = False,
+                 detection_delay_ticks: int = 0):
         self._state = SubtitleState()
         self._on_match = on_match
+        self._on_detected = on_detected  # immediate callback on detection
+        self._detection_delay = detection_delay_ticks
+        self._pending_detection = None  # (result, trigger_tick)
 
         if transcript:
             transcript_dir = Path("transcripts")
@@ -307,9 +311,21 @@ class SubtitleSystem:
             _logger.info(f"Transcript logging to transcripts/{ts}.txt")
 
     def on_tick(self, ctx: TickContext) -> None:
+        # Check if pending detection delay has elapsed
+        if self._pending_detection:
+            result, trigger_tick = self._pending_detection
+            if ctx.tick - trigger_tick >= self._detection_delay:
+                self._pending_detection = None
+                self._on_match(result, ctx.sim_time)
+
         result = process_subtitle_frame(ctx.frame_bgr, ctx.sim_time, self._state)
         if result:
-            self._on_match(result, ctx.sim_time)
+            if self._on_detected:
+                self._on_detected(result, ctx.sim_time)
+            if self._detection_delay > 0 and self._pending_detection is None:
+                self._pending_detection = (result, ctx.tick)
+            else:
+                self._on_match(result, ctx.sim_time)
 
     @property
     def hero_map(self) -> dict[str, str]:
@@ -318,6 +334,13 @@ class SubtitleSystem:
     @property
     def hero_history(self) -> dict[str, list[tuple[float, str]]]:
         return {k: list(v) for k, v in self._state.hero_history.items()}
+
+    def flush_pending(self, sim_time: float) -> None:
+        """Fire any pending detection immediately (e.g., when replay ends)."""
+        if self._pending_detection:
+            result, _ = self._pending_detection
+            self._pending_detection = None
+            self._on_match(result, sim_time)
 
     def reset_match(self) -> None:
         self._state.hero_map.clear()
