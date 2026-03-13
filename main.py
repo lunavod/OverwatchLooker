@@ -60,6 +60,11 @@ def main():
         action="store_true",
         help="Skip decompressing frames to disk cache (slower replay)",
     )
+    parser.add_argument(
+        "--no-analysis",
+        action="store_true",
+        help="Skip LLM analysis on detection (useful for testing replays)",
+    )
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -152,7 +157,8 @@ def main():
         print_status(f"Replaying {replay_dir.name} ({replay.duration:.0f}s, "
                      f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
 
-        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript, replay_source=replay)
+        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
+                  replay_source=replay, no_analysis=args.no_analysis)
         app._start_listening()
 
         try:

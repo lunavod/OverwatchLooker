@@ -1,4 +1,4 @@
-"""Screen + keyboard recorder using zstd frame compression.
+"""Screen + keyboard recorder using fast zstd frame compression.
 
 Frames are pushed from the tick loop via push_frame(). The recorder
 compresses and writes them in a background thread.
@@ -19,7 +19,7 @@ _logger = logging.getLogger("overwatchlooker")
 
 _RECORDINGS_DIR = Path(__file__).parent.parent.parent / "recordings"
 _TARGET_FPS = 10
-_ZSTD_LEVEL = 3  # fast compression; level 3 is a good speed/ratio tradeoff
+_ZSTD_LEVEL = 1  # fastest compression; keeps up with 10fps 4K capture
 
 
 class Recorder:
@@ -38,8 +38,11 @@ class Recorder:
         self._frame_queue: list = []
         self._queue_lock = threading.Lock()
         self._start_time = 0.0
+        self._start_tick = 0
         self._frame_count = 0
+        self._frames_written = 0
         self._resolution: tuple[int, int] = (0, 0)
+        self._held_keys: set[str] = set()  # track held keys to filter OS key repeat
         self._compressor = zstd.ZstdCompressor(level=_ZSTD_LEVEL)
 
     @property
@@ -66,10 +69,12 @@ class Recorder:
         except Exception as e:
             _logger.warning(f"Failed to log event: {e}")
 
-    def push_frame(self, frame: np.ndarray) -> None:
+    def push_frame(self, frame: np.ndarray, tick: int = 0) -> None:
         """Push a BGR frame to be recorded. Called from the tick loop."""
         if not self._recording:
             return
+        if self._frame_count == 0:
+            self._start_tick = tick
         raw = frame.tobytes()
         with self._queue_lock:
             self._frame_queue.append(raw)
@@ -99,10 +104,11 @@ class Recorder:
         self._frames_file = open(self._output_dir / "frames.bin", "wb")
 
         self._frame_count = 0
+        self._frames_written = 0
         self._recording = True
         self._start_time = time.monotonic()
 
-        # Start background writer thread (compresses + writes frames)
+        # Start background writer thread
         self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
         self._writer_thread.start()
 
@@ -117,9 +123,12 @@ class Recorder:
         self._recording = False
         duration = self._elapsed()
 
-        # Wait for writer to drain queue
+        # Wait for writer to fully drain queue (no timeout — must flush all frames)
         if self._writer_thread:
-            self._writer_thread.join(timeout=30.0)
+            remaining = len(self._frame_queue)
+            if remaining:
+                _logger.info(f"Flushing {remaining} queued frames to disk...")
+            self._writer_thread.join()
 
         # Close frames file
         if self._frames_file:
@@ -131,7 +140,7 @@ class Recorder:
             "start_time": datetime.now().isoformat(),
             "resolution": list(self._resolution),
             "fps": _TARGET_FPS,
-            "frame_count": self._frame_count,
+            "frame_count": self._frames_written,
             "duration_seconds": round(duration, 1),
             "format": "zstd",
         }
@@ -140,24 +149,29 @@ class Recorder:
         )
 
         output = self._output_dir
-        frame_count = self._frame_count
+        frames_written = self._frames_written
         self._cleanup()
 
         _logger.info(
-            f"Recording stopped: {frame_count} frames, "
+            f"Recording stopped: {frames_written} frames, "
             f"{duration:.1f}s, saved to {output}"
         )
         return output
 
     def log_key_events(self, tick: int, pressed: set[str], released: set[str]) -> None:
-        """Log key events for a given frame (called by tick loop)."""
+        """Log key events for a given frame, filtering OS key repeat."""
+        frame = tick - self._start_tick
         for key in pressed:
-            self.log_event("key_down", frame=tick, key=key)
+            if key not in self._held_keys:
+                self._held_keys.add(key)
+                self.log_event("key_down", frame=frame, key=key)
         for key in released:
-            self.log_event("key_up", frame=tick, key=key)
+            if key in self._held_keys:
+                self._held_keys.discard(key)
+                self.log_event("key_up", frame=frame, key=key)
 
     def _writer_loop(self) -> None:
-        """Compress and write frame queue to frames.bin file."""
+        """Compress and write frame queue to frames.bin."""
         while self._recording or self._frame_queue:
             batch = None
             with self._queue_lock:
@@ -172,6 +186,7 @@ class Recorder:
                             struct.pack("<I", len(compressed))
                         )
                         self._frames_file.write(compressed)
+                        self._frames_written += 1
                     except Exception as e:
                         _logger.error(f"Frame write failed: {e}")
                         return
@@ -187,3 +202,4 @@ class Recorder:
             self._frames_file.close()
             self._frames_file = None
         self._frame_count = 0
+        self._frames_written = 0

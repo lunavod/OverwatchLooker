@@ -220,8 +220,8 @@ class TabCaptureSystem:
         self._countdown = 0  # ticks remaining in current wait
         self._got_valid = False
 
-        self._initial_wait = max(1, int(fps * 1.0))
-        self._retry_wait = max(1, int(fps * 0.5))
+        self._initial_wait = max(1, int(fps * 0.5))
+        self._retry_wait = 1
         self._cooldown_wait = max(1, int(fps * 0.5))
 
     def on_tick(self, ctx: TickContext) -> None:
@@ -262,8 +262,7 @@ class TabCaptureSystem:
                 self._state = _TabState.DONE
             else:
                 _logger.info(f"Tab screen rejected: {reason}")
-                self._state = _TabState.RETRY_WAIT
-                self._countdown = self._retry_wait
+                # Stay in CHECK — retry on next tick
 
         elif self._state == _TabState.RETRY_WAIT:
             if not tab_active:
@@ -388,7 +387,7 @@ class TickLoop:
                         self.on_key_events(tick, pressed, released)
 
                 if self.on_frame:
-                    self.on_frame(frame)
+                    self.on_frame(frame, tick)
                 self._current_tick = tick
                 ctx_holder[0] = TickContext(tick, sim_time, frame, self.input_source)
                 tick_holder[0] = tick

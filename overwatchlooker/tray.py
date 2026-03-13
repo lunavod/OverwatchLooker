@@ -38,7 +38,8 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 
 class App:
     def __init__(self, use_telegram: bool = False, use_mcp: bool = False,
-                 use_transcript: bool = False, replay_source=None):
+                 use_transcript: bool = False, replay_source=None,
+                 no_analysis: bool = False):
         self._active = False
         self._detector = None  # SubtitleSystem
         self._analyzing = False
@@ -49,6 +50,7 @@ class App:
         self._use_mcp = use_mcp
         self._use_transcript = use_transcript
         self._replay_source = replay_source  # ReplaySource for replay mode
+        self._no_analysis = no_analysis
         self._recorder = None  # Recorder for recording mode
         self._tick_loop = None  # TickLoop instance
 
@@ -77,6 +79,9 @@ class App:
         """Subtitle or audio detected VICTORY/DEFEAT: analyze the latest screenshot."""
         if self._recorder:
             self._recorder.log_event("detection", result=result)
+        if self._no_analysis:
+            print_status(f"Detected: {result} (analysis skipped)")
+            return
         with self._lock:
             if self._analyzing:
                 print_status("Analysis already in progress, ignoring detection trigger.")
@@ -105,6 +110,7 @@ class App:
                       hero_crops: dict[str, bytes] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
+            show_notification("OverwatchLooker", f"{detection_result} detected! Analyzing...")
             if self._replay_source:
                 print_status(f"Detected: {detection_result}. Analyzing...")
             else:
@@ -112,7 +118,6 @@ class App:
                              f"Waiting {_AUDIO_ANALYSIS_DELAY:.0f}s before analysis...")
                 time.sleep(_AUDIO_ANALYSIS_DELAY)
                 detection_time += _AUDIO_ANALYSIS_DELAY
-            show_notification("OverwatchLooker", f"{detection_result} detected! Analyzing...")
 
             with self._lock:
                 tabs = list(self._valid_tabs)

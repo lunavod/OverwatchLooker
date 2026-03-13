@@ -46,11 +46,15 @@ def print_analysis(analysis: str) -> str:
     return formatted
 
 
+def _ts() -> str:
+    return datetime.datetime.now().strftime("%H:%M:%S")
+
+
 def print_status(message: str) -> None:
     """Print a status message."""
-    _safe_print(f"[OWL] {message}")
+    _safe_print(f"[OWL {_ts()}] {message}")
 
 
 def print_error(message: str) -> None:
     """Print an error message."""
-    _safe_print(f"[OWL ERROR] {message}")
+    _safe_print(f"[OWL ERROR {_ts()}] {message}")
