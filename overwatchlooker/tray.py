@@ -14,6 +14,7 @@ from overwatchlooker.display import print_analysis, print_error, print_status
 if TYPE_CHECKING:
     from overwatchlooker.recording.recorder import Recorder
     from overwatchlooker.tick import SubtitleSystem, TickLoop
+    from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
 from overwatchlooker.notification import copy_to_clipboard, show_notification  # noqa: E402
@@ -45,7 +46,7 @@ _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 class App:
     def __init__(self, use_telegram: bool = False, use_mcp: bool = False,
                  use_transcript: bool = False, replay_source=None,
-                 no_analysis: bool = False):
+                 no_analysis: bool = False, event_bus: EventBus | None = None):
         self._active = False
         self._detector: SubtitleSystem | None = None
         self._analyzing = False
@@ -60,6 +61,12 @@ class App:
         self._recorder: Recorder | None = None
         self._tick_loop: TickLoop | None = None
         self._subtitle_system: SubtitleSystem | None = None
+        self._bus = event_bus
+
+    def _ws_emit(self, event: dict) -> None:
+        """Emit an event to the WebSocket bus if enabled."""
+        if self._bus:
+            self._bus.emit(event)
 
     def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str) -> None:
         """Store a valid Tab screenshot (called by TabCaptureSystem).
@@ -70,7 +77,10 @@ class App:
             self._valid_tabs.append((png_bytes, timestamp, filename))
             if len(self._valid_tabs) > 2:
                 self._valid_tabs.pop(0)
+            tab_count = len(self._valid_tabs)
         print_status(f"Tab screenshot saved: {filename}")
+        self._ws_emit({"type": "tab_capture", "filename": filename,
+                       "timestamp": timestamp, "count": tab_count})
 
     def store_hero_crop(self, name: str, crop: bytes) -> None:
         """Store a hero panel crop (called by TabCaptureSystem)."""
@@ -79,13 +89,20 @@ class App:
                        for k in self._hero_crops):
                 self._hero_crops[name] = crop
                 _logger.info(f"Stored hero crop: {name}")
+                self._ws_emit({"type": "hero_crop", "name": name})
             else:
                 _logger.debug(f"Hero crop dedup skip: {name}")
+
+    def _on_hero_switch(self, player: str, hero: str, sim_time: float) -> None:
+        """Callback when a hero switch is detected in subtitles."""
+        self._ws_emit({"type": "hero_switch", "player": player,
+                       "hero": hero, "time": sim_time})
 
     def _on_detected(self, result: str, detection_time: float = 0.0) -> None:
         """Immediate callback when VICTORY/DEFEAT is first detected."""
         if self._recorder:
             self._recorder.log_event("detection", result=result)
+        self._ws_emit({"type": "detection", "result": result, "time": detection_time})
         show_notification("OverwatchLooker", f"{result} detected! Analyzing...")
         if self._no_analysis:
             print_status(f"Detected: {result} (analysis skipped)")
@@ -123,6 +140,7 @@ class App:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
             print_status(f"Analyzing {detection_result}...")
+            self._ws_emit({"type": "analyzing", "result": detection_result})
 
             with self._lock:
                 tabs = list(self._valid_tabs)
@@ -180,6 +198,7 @@ class App:
                                             hero_history=hero_history)
 
                 formatted = print_analysis(display_text)
+                self._ws_emit({"type": "analysis", "data": result})
                 if self._use_mcp:
                     from overwatchlooker.mcp_client import submit_match
                     try:
@@ -260,6 +279,7 @@ class App:
         detection_delay = int(fps * _AUDIO_ANALYSIS_DELAY)
         subtitle_system = SubtitleSystem(on_match=self._on_detection,
                                          on_detected=self._on_detected,
+                                         on_hero_switch=self._on_hero_switch,
                                          transcript=self._use_transcript,
                                          detection_delay_ticks=detection_delay)
         self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
@@ -272,6 +292,7 @@ class App:
             tick_thread.start()
 
         print_status(f"Listening (analyzer={ANALYZER}, detection={detect_mode}). Tab=screenshot.")
+        self._ws_emit({"type": "state", "active": True, "analyzing": False})
 
     def _stop_listening(self) -> None:
         if not self._active:
@@ -287,6 +308,7 @@ class App:
             self._detector.stop()
         self._detector = None
         print_status("Stopped listening.")
+        self._ws_emit({"type": "state", "active": False})
 
     def _on_submit_tab(self, result: str) -> None:
         """Manually submit last tab screenshot with a given result."""

@@ -39,3 +39,6 @@ OVERWATCH_USERNAME: str = os.environ.get("OVERWATCH_USERNAME", "")
 # MCP server
 MCP_URL: str = os.environ.get("MCP_URL", "")
 MCP_SOURCE: str = os.environ.get("MCP_SOURCE", "looker")
+
+# WebSocket server for companion app
+WS_PORT: int = int(os.environ.get("WS_PORT", "42685"))

@@ -97,6 +97,7 @@ Replays a previously recorded session at max speed, running the full detection a
 | `--no-analysis` | Skip LLM analysis on detection (useful for testing replays) |
 | `--win` | Hint that the match result is VICTORY |
 | `--loss` | Hint that the match result is DEFEAT |
+| `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
 
 ## Output format
 
@@ -202,6 +203,7 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `OVERWATCH_USERNAME` | -- | Your BattleTag (improves self-player detection) |
 | `MCP_URL` | -- | MCP server URL for match data upload |
 | `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
+| `WS_PORT` | `42685` | WebSocket server port for companion apps |
 
 ## Project structure
 
@@ -229,6 +231,9 @@ overwatchlooker/
   notification.py                # Clipboard, tkinter overlay, audio chime
   telegram.py                    # Telethon message sending
   mcp_client.py                  # MCP server client (Streamable HTTP)
+  ws_server.py                   # WebSocket server for companion apps
+docs/
+  websocket-protocol.md          # WebSocket event protocol reference
 recordings/                      # Recorded gameplay sessions
 cache/                           # Cached analysis results
 logs/                            # Timestamped log files

@@ -2,7 +2,9 @@
 
 import re
 import time
+from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from overwatchlooker.heroes import edit_distance, match_hero_name
@@ -62,6 +64,51 @@ class TestVictoryDefeatRegex:
     def test_no_false_positive(self):
         assert not re.search(r"athena\W{0,3}\s*victory", "player1 victory")
         assert not re.search(r"athena\W{0,3}\s*defeat", "defeat is near")
+
+
+class TestSubtitleSystemHeroSwitchCallback:
+    """Test that SubtitleSystem fires on_hero_switch when hero_map changes."""
+
+    def _make_ctx(self, tick=0, sim_time=0.0):
+        from overwatchlooker.tick import TickContext
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        return TickContext(tick=tick, sim_time=sim_time, frame_bgr=frame, input=MagicMock())
+
+    def test_callback_fires_on_new_hero(self):
+        from unittest.mock import patch
+        from overwatchlooker.tick import SubtitleSystem
+
+        callback = MagicMock()
+        system = SubtitleSystem(on_match=lambda r, t: None, on_hero_switch=callback)
+
+        # Mock process_subtitle_frame to inject a hero into the state
+        def fake_process(frame, sim_time, state):
+            state.hero_map["PLAYER1"] = "Reinhardt"
+            return None
+
+        with patch("overwatchlooker.tick.process_subtitle_frame", side_effect=fake_process):
+            system.on_tick(self._make_ctx())
+
+        callback.assert_called_once_with("PLAYER1", "Reinhardt", 0.0)
+
+    def test_callback_not_fired_when_unchanged(self):
+        from unittest.mock import patch
+        from overwatchlooker.tick import SubtitleSystem
+
+        callback = MagicMock()
+        system = SubtitleSystem(on_match=lambda r, t: None, on_hero_switch=callback)
+
+        def fake_process(frame, sim_time, state):
+            state.hero_map["PLAYER1"] = "Reinhardt"
+            return None
+
+        with patch("overwatchlooker.tick.process_subtitle_frame", side_effect=fake_process):
+            system.on_tick(self._make_ctx(tick=0, sim_time=0.0))
+            callback.reset_mock()
+            # Second tick: hero_map unchanged, callback should NOT fire
+            system.on_tick(self._make_ctx(tick=1, sim_time=0.1))
+
+        callback.assert_not_called()
 
 
 class TestSubtitleListenerState:

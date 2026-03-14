@@ -1,7 +1,9 @@
 """Shared fixtures for OverwatchLooker test suite."""
 
-import pytest
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -18,6 +20,14 @@ SCREENSHOT_FIXTURES = [
 
 def _have_fixtures() -> bool:
     return all((FIXTURES_DIR / f).exists() for f, _, _ in SCREENSHOT_FIXTURES)
+
+
+@pytest.fixture(autouse=True)
+def _suppress_notifications():
+    """Prevent desktop notifications and clipboard writes during tests."""
+    with patch("overwatchlooker.notification.show_notification"), \
+         patch("overwatchlooker.notification.copy_to_clipboard"):
+        yield
 
 
 def pytest_collection_modifyitems(config, items):

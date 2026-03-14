@@ -65,6 +65,11 @@ def main():
         action="store_true",
         help="Skip LLM analysis on detection (useful for testing replays)",
     )
+    parser.add_argument(
+        "--ws",
+        action="store_true",
+        help="Start WebSocket server for companion app",
+    )
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -84,6 +89,16 @@ def main():
         import overwatchlooker.config as cfg
         cfg.ANALYZER = args.analyzer
 
+    # Start WebSocket server if requested
+    event_bus = None
+    ws_server = None
+    if args.ws:
+        from overwatchlooker.ws_server import EventBus, WsServer
+        from overwatchlooker.config import WS_PORT
+        event_bus = EventBus()
+        ws_server = WsServer(event_bus, port=WS_PORT)
+        ws_server.start()
+
     features = [f"analyzer={analyzer}"]
     if args.tg:
         features.append("telegram")
@@ -91,6 +106,9 @@ def main():
         features.append("mcp")
     if args.transcript:
         features.append("transcript")
+    if args.ws:
+        from overwatchlooker.config import WS_PORT
+        features.append(f"ws://0.0.0.0:{WS_PORT}")
     print_status(f"OverwatchLooker started ({', '.join(features)})")
 
     if args.image:
@@ -158,7 +176,7 @@ def main():
                      f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
 
         app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
-                  replay_source=replay, no_analysis=args.no_analysis)
+                  replay_source=replay, no_analysis=args.no_analysis, event_bus=event_bus)
         app._start_listening()
 
         try:
@@ -182,7 +200,8 @@ def main():
             replay.close()
             print_status("Replay finished.")
     else:
-        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript)
+        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
+                  event_bus=event_bus)
         app.run()
 
 

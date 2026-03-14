@@ -294,11 +294,12 @@ class TabCaptureSystem:
 class SubtitleSystem:
     """OCR subtitle detection, runs every N ticks."""
 
-    def __init__(self, on_match, on_detected=None, transcript: bool = False,
-                 detection_delay_ticks: int = 0):
+    def __init__(self, on_match, on_detected=None, on_hero_switch=None,
+                 transcript: bool = False, detection_delay_ticks: int = 0):
         self._state = SubtitleState()
         self._on_match = on_match
         self._on_detected = on_detected  # immediate callback on detection
+        self._on_hero_switch = on_hero_switch  # callback(player, hero, sim_time)
         self._detection_delay = detection_delay_ticks
         self._pending_detection: tuple[str, int] | None = None  # (result, trigger_tick)
 
@@ -319,7 +320,17 @@ class SubtitleSystem:
                 self._pending_detection = None
                 self._on_match(pending_result, ctx.sim_time)
 
+        # Snapshot hero_map before processing to detect new switches
+        prev_map = dict(self._state.hero_map) if self._on_hero_switch else {}
+
         result = process_subtitle_frame(ctx.frame_bgr, ctx.sim_time, self._state)
+
+        # Emit hero switch events for new or changed entries
+        if self._on_hero_switch:
+            for player, hero in self._state.hero_map.items():
+                if prev_map.get(player) != hero:
+                    self._on_hero_switch(player, hero, ctx.sim_time)
+
         if result:
             if self._on_detected:
                 self._on_detected(result, ctx.sim_time)
