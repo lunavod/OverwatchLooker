@@ -1,8 +1,8 @@
 # OverwatchLooker
 
-Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero abilities), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
+Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero switches), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
 
-Two analyzer backends: **Claude Vision** (cloud, default) or **EasyOCR** (local, GPU-accelerated). Two detection modes for automatic triggering: **subtitle OCR** (default) or **audio matching**.
+Two analyzer backends: **Claude Vision** (cloud, default) or **ChatGPT/Codex** (cloud). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
 
 ## Setup
 
@@ -15,10 +15,10 @@ uv sync
 Create a `.env` file:
 
 ```env
-# Analyzer backend: "claude" (default) or "ocr"
-ANALYZER=claude
+# Analyzer backend: "anthropic" (default) or "codex"
+ANALYZER=anthropic
 
-# Required for Claude backend
+# Required for Anthropic backend
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional: player identity (improves self-player detection)
@@ -41,18 +41,20 @@ MCP_URL=https://your-mcp-server.example.com/mcp
 uv run python main.py
 uv run python main.py --tg       # send results to Telegram
 uv run python main.py --mcp      # upload structured match data to MCP server
-uv run python main.py --audio    # use audio detection instead of subtitle OCR
+uv run python main.py --transcript  # log subtitle OCR to transcripts/
 ```
 
-Starts a system tray application:
+Starts a system tray application with a tick-based frame loop:
 
-1. **Hold Tab** in-game to open the scoreboard — a screenshot is captured automatically
-2. **Victory/defeat is detected automatically** via subtitle OCR (or audio matching with `--audio`)
-3. Analysis runs, result is **copied to clipboard** (or sent to Telegram with `--tg`)
-4. A **notification** appears on the second monitor with a chime
+1. **Hold Tab** in-game to open the scoreboard — a screenshot is captured automatically via dxcam
+2. **Hero switches are tracked** in real time via subtitle OCR (Tesseract)
+3. **Victory/defeat is detected automatically** via subtitle OCR
+4. Analysis runs, result is **copied to clipboard** (or sent to Telegram with `--tg`)
+5. A **notification** appears on the second monitor with a chime
 
 Tray menu (right-click icon):
 - **Start/Stop Listening** -- toggle hotkey + detection
+- **Start/Stop Recording** -- record gameplay to `recordings/` for later replay
 - **Submit last tab (win/loss)** -- manually trigger analysis with a known result
 - **Quit**
 
@@ -70,15 +72,29 @@ uv run python main.py screenshot.png --tg       # send to Telegram
 
 Analyzes a saved screenshot directly. Results are cached on disk (`cache/`) and reused on subsequent runs unless `--clean` is passed.
 
+### Replay mode
+
+```bash
+uv run python main.py --replay recordings/2026-03-07_21-00-39
+uv run python main.py --replay recordings/2026-03-07_21-00-39 --no-analysis  # skip LLM
+uv run python main.py --replay recordings/2026-03-07_21-00-39 --no-cache     # don't cache decompressed frames
+```
+
+Replays a previously recorded session at max speed, running the full detection and analysis pipeline as if it were live. Useful for testing and debugging.
+
 ### CLI flags
 
 | Flag | Description |
 |---------|-------------|
+| `--analyzer` | Override analyzer backend (`anthropic` or `codex`) |
 | `--tg` | Send results to Telegram instead of clipboard |
 | `--mcp` | Upload structured match data to the MCP server |
-| `--audio` | Use audio-based victory/defeat detection (requires proc-tap) |
 | `--clean` | Bypass disk cache and re-analyze from scratch |
 | `--backfill` | Mark match as backfilled when uploading to MCP |
+| `--transcript` | Log subtitle OCR results to `transcripts/` folder |
+| `--replay` | Replay a recording directory instead of live capture |
+| `--no-cache` | Skip decompressing frames to disk cache (slower replay) |
+| `--no-analysis` | Skip LLM analysis on detection (useful for testing replays) |
 | `--win` | Hint that the match result is VICTORY |
 | `--loss` | Hint that the match result is DEFEAT |
 
@@ -111,51 +127,53 @@ Mizuki - Players Saved: 11; Weapon Accuracy: 31%; ...
 ============================================================
 ```
 
-## Detection modes
+## Detection
 
-### Subtitle OCR (default)
+### Subtitle OCR
 
-Monitors the bottom-center of the screen for the ATHENA subtitle text ("VICTORY" / "DEFEAT"). Uses a fast two-stage approach:
+Monitors the bottom-center of the screen for subtitle text using Tesseract (via pytesseract-api, direct C API bindings). Runs as part of the tick-based frame loop.
 
-1. **HSV pre-filter** -- checks for 500+ white pixels in the subtitle region (bottom 10%, center 20%)
-2. **EasyOCR confirmation** -- runs OCR only when white pixels are detected
+**Victory/defeat detection:**
+1. **HSV pre-filter** -- checks for white pixels in the subtitle region (bottom 10%, center 20%)
+2. **Tesseract confirmation** -- runs OCR only when white pixels are detected
+3. **Configurable delay** -- waits 5 seconds after detection before triggering analysis
+
+**Hero switch tracking:**
+- Detects hero names in subtitle text (e.g., "Player switched to Tracer")
+- Fuzzy matching against the hero list using Levenshtein edit distance
+- Builds per-player hero history with timestamps for the full match
 
 Only activates when `overwatch.exe` is the foreground window. 30-second cooldown between detections.
 
-### Audio matching (`--audio`)
-
-Captures Overwatch process audio via WASAPI loopback (per-process, no system sounds) using [proc-tap](https://github.com/EricLBuehler/proc-tap). Matches against reference clips in `refs/` using normalized cross-correlation.
-
-- Ring buffer stores last 4 seconds of audio, processed every 0.5s
-- Requires 2 consecutive matching hops above threshold
-- Winner must beat runner-up by a configurable margin
-- 30-second cooldown between detections
-
-Reference clips go in `refs/` as `victory.wav` and `defeat.wav` (also supports `.ogg`, `.flac`).
-
 ## Analyzer backends
 
-### Claude Vision (`ANALYZER=claude`, default)
+### Claude Vision (`ANALYZER=anthropic`, default)
 
 Sends the screenshot to Claude with a structured JSON schema prompt. Returns structured match data (map, mode, queue type, result, all player stats, hero-specific stats). Costs are logged to `api_costs.jsonl`.
 
 - Model: configurable via `ANTHROPIC_MODEL` (default: `claude-sonnet-4-6`)
 - Uses JSON Schema output for reliable structured extraction
 - If `OVERWATCH_USERNAME` is set, the model is instructed to always identify that player as `is_self`
+- Screenshots are downscaled to 1568px max width before sending
 
-### EasyOCR (`ANALYZER=ocr`)
+### ChatGPT/Codex (`ANALYZER=codex`)
 
-Fully local analysis using EasyOCR + OpenCV. No API calls, no cost.
+Uses the ChatGPT/Codex API with the same structured schema. Supports per-hero crop images for multi-hero analysis.
 
-- GPU-accelerated (CUDA 12.4)
-- Hybrid approach: batch OCR for large text + focused cell-level OCR for small stats
-- HSV brightness analysis to detect OW2's dim "0" values vs. bright non-zero stats
-- Region-based extraction with normalized coordinates for resolution independence
-- Detects competitive vs quickplay from "- COMPETITIVE" suffix in mode header
+- Model: configurable via `CODEX_MODEL` (default: `gpt-5.3-codex`)
+- Optional reasoning effort via `CODEX_REASONING` (`low`, `medium`, `high`, `xhigh`)
+
+## Recording and replay
+
+The app can record gameplay sessions for later replay and analysis.
+
+**Recording:** Toggle via the tray menu. Records screen frames at 10 FPS with zstd compression, downscaled to 1080p. Keyboard events are logged with frame numbers for deterministic replay. Recordings are saved to `recordings/` with timestamped directories.
+
+**Replay:** Use `--replay <dir>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 
 ## MCP integration
 
-With `--mcp`, structured match data (map, mode, players, stats, hero details) is uploaded to an MCP server via Streamable HTTP after each analysis. Requires `MCP_URL` in `.env`. Only works with the Claude backend (structured JSON output).
+With `--mcp`, structured match data (map, mode, players, stats, hero details, hero switch history) is uploaded to an MCP server via Streamable HTTP after each analysis. Requires `MCP_URL` in `.env`.
 
 ## Telegram integration
 
@@ -169,20 +187,16 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ANALYZER` | `"claude"` | Backend: `"claude"` or `"ocr"` |
-| `ANTHROPIC_API_KEY` | -- | Required for Claude backend |
+| `ANALYZER` | `"anthropic"` | Backend: `"anthropic"` or `"codex"` |
+| `ANTHROPIC_API_KEY` | -- | Required for Anthropic backend |
 | `ANTHROPIC_MODEL` | `"claude-sonnet-4-6"` | Claude model to use |
+| `CODEX_MODEL` | `"gpt-5.3-codex"` | ChatGPT/Codex model to use |
+| `CODEX_REASONING` | -- | Reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `MAX_TOKENS` | `16000` | Max response tokens |
 | `MONITOR_INDEX` | `1` | Which monitor to capture (1 = primary) |
 | `SCREENSHOT_MAX_AGE_SECONDS` | `120` | Max age of screenshot before it's considered stale |
 | `SUBTITLE_POLL_INTERVAL` | `1.0` | Seconds between subtitle region checks |
-| `AUDIO_CHUNK_DURATION` | `4.0` | Ring buffer length (seconds) |
-| `AUDIO_HOP_DURATION` | `0.5` | Processing interval (seconds) |
 | `AUDIO_COOLDOWN_SECONDS` | `30.0` | Min seconds between detections |
-| `AUDIO_MATCH_THRESHOLD` | `0.25` | NCC threshold for match |
-| `AUDIO_CONFIRM_HOPS` | `2` | Consecutive hops required to confirm |
-| `AUDIO_MATCH_MARGIN` | `0.10` | Winner must beat runner-up by this |
-| `AUDIO_MIN_RMS` | `0.0005` | Minimum RMS energy to attempt matching |
 | `OVERWATCH_USERNAME` | -- | Your BattleTag (improves self-player detection) |
 | `MCP_URL` | -- | MCP server URL for match data upload |
 | `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
@@ -193,19 +207,27 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 main.py                          # CLI entry point
 overwatchlooker/
   config.py                      # Environment config + constants
-  tray.py                        # System tray app, screenshot loop, analysis orchestration
+  tick.py                        # Tick-based frame loop (live + replay)
+  tray.py                        # System tray app, analysis orchestration
   hotkey.py                      # Tab key listener (pynput, Windows foreground check)
-  screenshot.py                  # Monitor capture (mss), OW2 Tab screen validation
-  ocr_analyzer.py                # EasyOCR + OpenCV scoreboard extraction
-  analyzer.py                    # Claude Vision API scoreboard extraction
-  subtitle_listener.py           # Subtitle-based VICTORY/DEFEAT detection
-  audio_listener.py              # Audio-based VICTORY/DEFEAT detection (proc-tap)
+  screenshot.py                  # Screen capture (dxcam), OW2 Tab validation, Tesseract OCR
+  subtitle_listener.py           # Subtitle-based detection + hero switch tracking
+  heroes.py                      # Hero name fuzzy matching (Levenshtein)
+  heroes.txt                     # Complete list of OW2 heroes
+  analyzers/
+    __init__.py                  # Analyzer registry
+    anthropic.py                 # Claude Vision backend
+    codex.py                     # ChatGPT/Codex backend
+    common.py                    # Shared schema, formatting, hero merging
+  recording/
+    recorder.py                  # zstd-compressed frame + keyboard recording
+    replay.py                    # Frame decompression + event replay
   cache.py                       # SHA256-based disk cache for analysis results
   display.py                     # Formatting, logging, safe stdout for pythonw
   notification.py                # Clipboard, tkinter overlay, audio chime
   telegram.py                    # Telethon message sending
   mcp_client.py                  # MCP server client (Streamable HTTP)
-refs/                            # Audio reference clips (victory.wav, defeat.wav)
+recordings/                      # Recorded gameplay sessions
 cache/                           # Cached analysis results
 logs/                            # Timestamped log files
 ```
