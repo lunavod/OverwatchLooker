@@ -16,10 +16,10 @@ from litellm import cost_per_token  # noqa: E402
 
 litellm.suppress_debug_info = True
 
-from overwatchlooker.analyzers.common import (
+from overwatchlooker.analyzers.common import (  # noqa: E402
     MATCH_SCHEMA, NAMES_REGION, RANK_REGION, SYSTEM_PROMPT, crop_region, log_cost,
 )
-from overwatchlooker.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOKENS, OVERWATCH_USERNAME, SONNET_RANK_TIERS
+from overwatchlooker.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, MAX_TOKENS, OVERWATCH_USERNAME, SONNET_RANK_TIERS  # noqa: E402
 
 _logger = logging.getLogger("overwatchlooker")
 
@@ -97,7 +97,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
         from overwatchlooker.analyzers.common import make_schema_with_extra_heroes
         schema = make_schema_with_extra_heroes()
 
-    message = client.messages.create(
+    message = client.messages.create(  # type: ignore[call-overload]
         model=ANTHROPIC_MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,

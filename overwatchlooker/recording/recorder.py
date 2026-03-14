@@ -152,6 +152,7 @@ class Recorder:
             self._frames_file = None
 
         # Write meta.json
+        assert self._output_dir is not None
         meta = {
             "start_time": datetime.now().isoformat(),
             "resolution": list(self._record_resolution),
@@ -164,7 +165,7 @@ class Recorder:
             json.dumps(meta, indent=2), encoding="utf-8"
         )
 
-        output = self._output_dir
+        output: Path = self._output_dir
         frames_written = self._frames_written
         self._cleanup()
 

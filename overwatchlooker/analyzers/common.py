@@ -5,6 +5,7 @@ import io
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from PIL import Image
 
@@ -220,9 +221,11 @@ _EXTRA_HERO_STATS_SCHEMA = {
 def make_schema_with_extra_heroes() -> dict:
     """Return MATCH_SCHEMA extended with extra_hero_stats field."""
     import copy
+    from typing import cast
     schema = copy.deepcopy(MATCH_SCHEMA)
-    schema["schema"]["properties"]["extra_hero_stats"] = _EXTRA_HERO_STATS_SCHEMA
-    schema["schema"]["required"].append("extra_hero_stats")
+    inner: dict[str, Any] = cast(dict, schema["schema"])
+    inner["properties"]["extra_hero_stats"] = _EXTRA_HERO_STATS_SCHEMA
+    inner["required"].append("extra_hero_stats")
     return schema
 
 
@@ -309,7 +312,7 @@ def merge_heroes(data: dict, hero_map: dict[str, str] | None = None,
 
     for p in data["players"]:
         player_name = p["player_name"]
-        heroes = []
+        heroes: list[dict[str, Any]] = []
 
         # 1. Start with hero_history (subtitle tracking) — gives hero_name + started_at
         hist = hero_history.get(player_name, [])

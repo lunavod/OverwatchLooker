@@ -15,10 +15,10 @@ from litellm import cost_per_token  # noqa: E402
 
 litellm.suppress_debug_info = True
 
-from overwatchlooker.analyzers.common import (
+from overwatchlooker.analyzers.common import (  # noqa: E402
     MATCH_SCHEMA, NAMES_REGION, RANK_REGION, SYSTEM_PROMPT, crop_region, log_cost,
 )
-from overwatchlooker.config import CODEX_MODEL, CODEX_REASONING, OVERWATCH_USERNAME
+from overwatchlooker.config import CODEX_MODEL, CODEX_REASONING, OVERWATCH_USERNAME  # noqa: E402
 
 _logger = logging.getLogger("overwatchlooker")
 
@@ -66,7 +66,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
             "Use this as fallback if you cannot read the result text on screen."
         )
 
-    content = [
+    content: list[codex_open_client.InputText | codex_open_client.InputImage] = [
         codex_open_client.InputImage(image_url=_to_data_url(png_bytes), detail="high"),
         codex_open_client.InputImage(image_url=_to_data_url(names_crop), detail="high"),
         codex_open_client.InputImage(image_url=_to_data_url(rank_crop), detail="high"),
@@ -83,6 +83,10 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
         from overwatchlooker.analyzers.common import make_schema_with_extra_heroes
         schema = make_schema_with_extra_heroes()
 
+    from typing import Any, cast
+    schema_name = cast(str, schema["name"])
+    schema_body = cast(dict[str, Any], schema["schema"])
+
     response = client.responses.create(
         model=CODEX_MODEL,
         instructions=SYSTEM_PROMPT,
@@ -91,12 +95,14 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
         ],
         text=codex_open_client.TextConfig(
             format=codex_open_client.ResponseFormatJsonSchema(
-                name=schema["name"],
-                schema=schema["schema"],
+                name=schema_name,
+                schema=schema_body,
                 strict=True,
             )
         ),
-        reasoning=codex_open_client.Reasoning(effort=CODEX_REASONING) if CODEX_REASONING else None,
+        reasoning=codex_open_client.Reasoning(
+            effort=cast(Any, CODEX_REASONING)
+        ) if CODEX_REASONING else None,
     )
 
     elapsed = time.monotonic() - t0

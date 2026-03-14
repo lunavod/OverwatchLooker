@@ -1,15 +1,14 @@
 """Visual subtitle-based VICTORY/DEFEAT detection via screen capture + OCR."""
 
 import datetime
+import io
 import logging
+import os
 import re
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-
-import os
-import sys
 
 import cv2
 import numpy as np
@@ -59,7 +58,7 @@ _SAT_MIN_COLOR = 80       # min saturation for colored text (red/blue/green)
 _PIXEL_THRESHOLD = 500    # minimum text pixels to trigger OCR
 
 
-from overwatchlooker.heroes import edit_distance, match_hero_name
+from overwatchlooker.heroes import edit_distance, match_hero_name  # noqa: E402
 
 # Keep _edit_distance as alias for backward compat (imported by tray.py, tests)
 _edit_distance = edit_distance
@@ -107,7 +106,7 @@ def process_subtitle_frame(frame_bgr: np.ndarray, sim_time: float,
     binary = np.zeros(img.shape[:2], dtype=np.uint8)
     binary[text_mask] = 255
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    binary = cv2.dilate(binary, kernel, iterations=1)
+    binary = cv2.dilate(binary, kernel, iterations=1)  # type: ignore[assignment]
 
     text = _ocr(binary)
     _logger.debug(f"Subtitle OCR text: {text!r}")
@@ -174,7 +173,7 @@ class SubtitleListener:
         self._thread: threading.Thread | None = None
         self._last_trigger_time = 0.0
         self._transcript = transcript
-        self._transcript_file = None
+        self._transcript_file: io.TextIOWrapper | None = None
         self._last_lines: set[str] = set()  # lines from the previous OCR pass
         self._hero_map: dict[str, str] = {}  # UPPERCASE username -> hero name (Title Case)
         self._hero_history: dict[str, list[tuple[float, str]]] = {}  # username -> [(time, hero), ...]

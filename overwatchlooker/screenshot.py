@@ -12,7 +12,7 @@ import mss.tools
 import numpy as np
 from PIL import Image
 
-from pytesseract_api import image_to_string as _tess_image_to_string, TessPageSegMode, set_variable
+from pytesseract_api import image_to_string as _tess_image_to_string, TessPageSegMode
 
 from overwatchlooker.config import MONITOR_INDEX, SCREENSHOT_MAX_AGE_SECONDS
 
@@ -77,7 +77,7 @@ def resize_for_analyzer(png_bytes: bytes, analyzer: str) -> bytes:
     img = Image.open(io.BytesIO(png_bytes))
     if max(img.size) <= max_edge:
         return png_bytes
-    img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+    img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -259,6 +259,7 @@ def crop_hero_panel(png_bytes: bytes) -> bytes:
     """Crop the hero stats panel region and return as PNG bytes."""
     arr = np.frombuffer(png_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    assert img is not None
     h, w = img.shape[:2]
     x1, y1 = int(HERO_PANEL_REGION[0] * w), int(HERO_PANEL_REGION[1] * h)
     x2, y2 = int(HERO_PANEL_REGION[2] * w), int(HERO_PANEL_REGION[3] * h)
@@ -293,9 +294,9 @@ def ocr_hero_name(crop_png_bytes: bytes) -> str:
 
     # Dilate to thicken thin strokes, then upscale
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    binary = cv2.dilate(binary, kernel, iterations=1)
-    binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)
+    binary = cv2.dilate(binary, kernel, iterations=1)  # type: ignore[assignment]
+    binary = cv2.resize(binary, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)  # type: ignore[assignment]
+    _, binary = cv2.threshold(binary, 128, 255, cv2.THRESH_BINARY)  # type: ignore[assignment]
 
     try:
         old_stderr = os.dup(2)
@@ -339,4 +340,6 @@ def capture_monitor() -> bytes:
     # Fallback to full monitor capture
     with mss.mss() as sct:
         img = sct.grab(sct.monitors[MONITOR_INDEX])
-        return mss.tools.to_png(img.rgb, img.size)
+        png = mss.tools.to_png(img.rgb, img.size)
+        assert png is not None
+        return png

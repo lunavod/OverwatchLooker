@@ -1,8 +1,7 @@
 """Tests for hero list loading, edit distance, and fuzzy matching."""
 
-import pytest
 
-from overwatchlooker.heroes import ALL_HEROES, edit_distance, load_heroes, match_hero_name
+from overwatchlooker.heroes import ALL_HEROES, edit_distance, match_hero_name
 
 
 class TestHeroList:

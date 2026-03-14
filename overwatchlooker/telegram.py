@@ -4,7 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from telethon import TelegramClient
+from telethon import TelegramClient  # type: ignore[import-untyped]
 
 from overwatchlooker.config import TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_CHANNEL
 

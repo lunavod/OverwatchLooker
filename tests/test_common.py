@@ -1,9 +1,7 @@
 """Tests for analyzers.common: schema, merge_heroes, format_match, log_cost."""
 
-import copy
 import json
 
-import pytest
 
 from overwatchlooker.analyzers.common import (
     MATCH_SCHEMA,

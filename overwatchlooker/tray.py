@@ -1,21 +1,28 @@
+from __future__ import annotations
+
 import logging
 import threading
 import traceback
+from typing import TYPE_CHECKING
 
-import pystray
+import pystray  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw, ImageFont
 
 from overwatchlooker.config import ANALYZER, SCREENSHOT_MAX_AGE_SECONDS
 from overwatchlooker.display import print_analysis, print_error, print_status
 
+if TYPE_CHECKING:
+    from overwatchlooker.recording.recorder import Recorder
+    from overwatchlooker.tick import SubtitleSystem, TickLoop
+
 _logger = logging.getLogger("overwatchlooker")
-from overwatchlooker.notification import copy_to_clipboard, show_notification
-from overwatchlooker.screenshot import (
+from overwatchlooker.notification import copy_to_clipboard, show_notification  # noqa: E402
+from overwatchlooker.screenshot import (  # noqa: E402
     crop_hero_panel,
     has_hero_panel,
     ocr_hero_name,
 )
-from overwatchlooker.heroes import edit_distance as _edit_distance
+from overwatchlooker.heroes import edit_distance as _edit_distance  # noqa: E402
 
 
 def _create_icon_image() -> Image.Image:
@@ -24,7 +31,7 @@ def _create_icon_image() -> Image.Image:
     draw = ImageDraw.Draw(img)
     draw.ellipse([4, 4, 60, 60], fill=(51, 153, 255))
     try:
-        font = ImageFont.truetype("arial.ttf", 20)
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont = ImageFont.truetype("arial.ttf", 20)
     except OSError:
         font = ImageFont.load_default()
     draw.text((14, 18), "OW", fill="white", font=font)
@@ -40,7 +47,7 @@ class App:
                  use_transcript: bool = False, replay_source=None,
                  no_analysis: bool = False):
         self._active = False
-        self._detector = None  # SubtitleSystem
+        self._detector: SubtitleSystem | None = None
         self._analyzing = False
         self._lock = threading.Lock()
         self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
@@ -50,8 +57,9 @@ class App:
         self._use_transcript = use_transcript
         self._replay_source = replay_source  # ReplaySource for replay mode
         self._no_analysis = no_analysis
-        self._recorder = None  # Recorder for recording mode
-        self._tick_loop = None  # TickLoop instance
+        self._recorder: Recorder | None = None
+        self._tick_loop: TickLoop | None = None
+        self._subtitle_system: SubtitleSystem | None = None
 
     def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str) -> None:
         """Store a valid Tab screenshot (called by TabCaptureSystem).
@@ -97,13 +105,11 @@ class App:
             self._hero_crops.clear()
 
         # Grab hero map and history from subtitle listener before resetting
-        hero_map = {}
-        hero_history = {}
-        if hasattr(self._detector, "hero_map"):
+        hero_map: dict[str, str] = {}
+        hero_history: dict[str, list[tuple[float, str]]] = {}
+        if self._detector is not None:
             hero_map = self._detector.hero_map
-        if hasattr(self._detector, "hero_history"):
             hero_history = self._detector.hero_history
-        if hasattr(self._detector, "reset_match"):
             self._detector.reset_match()
 
         thread = threading.Thread(target=self._run_analysis,
@@ -236,8 +242,8 @@ class App:
 
         if self._replay_source:
             fps = self._replay_source.fps
-            frame_source = ReplayFrameSource(self._replay_source.reader)
-            input_source = ReplayInputSource(self._replay_source.events)
+            frame_source: ReplayFrameSource | LiveFrameSource = ReplayFrameSource(self._replay_source.reader)
+            input_source: ReplayInputSource | LiveInputSource = ReplayInputSource(self._replay_source.events)
             detect_mode = "replay"
         else:
             fps = 10
@@ -292,13 +298,11 @@ class App:
             hero_crops = dict(self._hero_crops)
             self._hero_crops.clear()
 
-        hero_map = {}
-        hero_history = {}
-        if hasattr(self._detector, "hero_map"):
+        hero_map: dict[str, str] = {}
+        hero_history: dict[str, list[tuple[float, str]]] = {}
+        if self._detector is not None:
             hero_map = self._detector.hero_map
-        if hasattr(self._detector, "hero_history"):
             hero_history = self._detector.hero_history
-        if hasattr(self._detector, "reset_match"):
             self._detector.reset_match()
 
         detection_time = self._tick_loop._current_tick / self._tick_loop.fps if self._tick_loop else 0.0
@@ -322,7 +326,7 @@ class App:
                     self._tick_loop.on_key_events = None
                 self._recorder = None
                 print_status(f"Recording saved to {output}")
-                show_notification("OverwatchLooker", f"Recording saved.")
+                show_notification("OverwatchLooker", "Recording saved.")
             except Exception as e:
                 print_error(f"Failed to stop recording: {e}")
         else:
@@ -334,7 +338,6 @@ class App:
                 if self._tick_loop and self._tick_loop.frame_source:
                     src = self._tick_loop.frame_source
                     if hasattr(src, '_camera') and src._camera:
-                        import dxcam
                         frame = src._camera.grab()
                         if frame is not None:
                             h, w = frame.shape[:2]

@@ -26,6 +26,7 @@ dependencies = [
     "lz4>=4.4.5",
     "zstandard>=0.25.0",
     "pytesseract-api>=1.0.4",
+    "websockets>=16.0",
 ]
 
 [tool.pytest.ini_options]
@@ -45,6 +46,8 @@ url = "https://download.pytorch.org/whl/cu128"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.19.1",
     "pytest>=9.0.2",
     "pytest-timeout>=2.4.0",
+    "types-pynput>=1.8.1.20250809",
 ]

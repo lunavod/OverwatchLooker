@@ -1,6 +1,5 @@
 """Tests for MCP client: HTTP protocol, JSON-RPC format."""
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,7 +40,7 @@ class TestSubmitMatch:
             mock_client.post.side_effect = [init_resp, notif_resp, tool_resp]
 
             from overwatchlooker.mcp_client import submit_match
-            result = submit_match(match_data)
+            submit_match(match_data)
 
             # Verify 3 POST calls: initialize, notification, tool call
             assert mock_client.post.call_count == 3

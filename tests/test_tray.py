@@ -1,6 +1,5 @@
 """Tests for tray App: hero crop lifecycle, analysis flow."""
 
-import threading
 from unittest.mock import MagicMock, patch
 
 import pytest

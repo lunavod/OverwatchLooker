@@ -6,7 +6,6 @@ import pytest
 
 from overwatchlooker.heroes import ALL_HEROES
 from overwatchlooker.screenshot import (
-    HERO_PANEL_REGION,
     crop_hero_panel,
     has_hero_panel,
     is_ow2_tab_screen,
@@ -14,7 +13,7 @@ from overwatchlooker.screenshot import (
     resize_for_analyzer,
 )
 
-from tests.conftest import FIXTURES_DIR, SCREENSHOT_FIXTURES
+from tests.conftest import SCREENSHOT_FIXTURES
 
 
 # --- is_ow2_tab_screen ---

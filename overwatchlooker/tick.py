@@ -6,6 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Protocol
 
 import cv2
@@ -48,7 +49,7 @@ class LiveFrameSource:
     """Captures screen via dxcam, paces at real FPS."""
 
     def __init__(self, fps: int):
-        import dxcam
+        import dxcam  # type: ignore[import-untyped]
         self._camera = dxcam.create(output_color="BGR")
         self._fps = fps
         self._interval = 1.0 / fps
@@ -299,7 +300,7 @@ class SubtitleSystem:
         self._on_match = on_match
         self._on_detected = on_detected  # immediate callback on detection
         self._detection_delay = detection_delay_ticks
-        self._pending_detection = None  # (result, trigger_tick)
+        self._pending_detection: tuple[str, int] | None = None  # (result, trigger_tick)
 
         if transcript:
             transcript_dir = Path("transcripts")
@@ -313,10 +314,10 @@ class SubtitleSystem:
     def on_tick(self, ctx: TickContext) -> None:
         # Check if pending detection delay has elapsed
         if self._pending_detection:
-            result, trigger_tick = self._pending_detection
+            pending_result, trigger_tick = self._pending_detection
             if ctx.tick - trigger_tick >= self._detection_delay:
                 self._pending_detection = None
-                self._on_match(result, ctx.sim_time)
+                self._on_match(pending_result, ctx.sim_time)
 
         result = process_subtitle_frame(ctx.frame_bgr, ctx.sim_time, self._state)
         if result:
@@ -367,8 +368,8 @@ class TickLoop:
         self._threads: list[threading.Thread] = []
         self.running = True
         self._current_tick = 0
-        self.on_frame = None  # optional callback(frame_bgr) called for every captured frame
-        self.on_key_events = None  # optional callback(tick, pressed, released) for recording
+        self.on_frame: Callable[[np.ndarray, int], None] | None = None  # optional callback(frame_bgr, tick)
+        self.on_key_events: Callable[[int, set[str], set[str]], None] | None = None  # optional callback(tick, pressed, released)
 
     def register(self, on_tick, every_n_ticks: int = 1) -> None:
         self._systems.append((every_n_ticks, on_tick))
@@ -379,7 +380,7 @@ class TickLoop:
             return
 
         barrier = threading.Barrier(n + 1)
-        ctx_holder = [None]
+        ctx_holder: list[TickContext | None] = [None]
         tick_holder = [0]
 
         for interval, system_fn in self._systems:

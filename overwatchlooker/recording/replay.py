@@ -1,8 +1,11 @@
 """Replay a recorded session, feeding frames and events to the app pipeline."""
 
+from __future__ import annotations
+
 import json
 import logging
 import struct
+from io import BufferedReader
 from pathlib import Path
 
 import numpy as np
@@ -77,26 +80,25 @@ class FrameReader:
         raw_path = recording_dir / "frames.raw"
         frames_path = recording_dir / "frames.bin"
 
+        self._raw_file: BufferedReader | None = None
+        self._file: BufferedReader | None = None
+        self._decompressor: zstd.ZstdDecompressor | None = None
+
         # Priority: raw file > zstd (decompress to raw first)
         if raw_path.exists():
             self._validate_raw(raw_path, meta)
             self._mode = "raw"
             self._raw_file = open(raw_path, "rb")
             self._frame_count = meta["frame_count"]
-            self._file = None
-            self._decompressor = None
         elif frames_path.exists() and not no_cache:
             _ensure_raw_frames(recording_dir, meta)
             self._mode = "raw"
             self._raw_file = open(raw_path, "rb")
             self._frame_count = meta["frame_count"]
-            self._file = None
-            self._decompressor = None
         elif frames_path.exists():
             self._mode = "zstd"
             self._file = open(frames_path, "rb")
             self._decompressor = zstd.ZstdDecompressor()
-            self._raw_file = None
         else:
             raise FileNotFoundError(
                 f"No frames.bin in {recording_dir}"
@@ -139,12 +141,15 @@ class FrameReader:
         return frame
 
     def _read_raw(self) -> np.ndarray | None:
+        assert self._raw_file is not None
         data = self._raw_file.read(self._frame_bytes)
         if len(data) < self._frame_bytes:
             return None
         return np.frombuffer(data, dtype=np.uint8).reshape(self._frame_shape)
 
     def _read_zstd(self) -> np.ndarray | None:
+        assert self._file is not None
+        assert self._decompressor is not None
         header = self._file.read(4)
         if len(header) < 4:
             return None
@@ -156,10 +161,10 @@ class FrameReader:
         return np.frombuffer(raw, dtype=np.uint8).reshape(self._frame_shape)
 
     def close(self) -> None:
-        if hasattr(self, '_raw_file') and self._raw_file:
+        if self._raw_file:
             self._raw_file.close()
             self._raw_file = None
-        if hasattr(self, '_file') and self._file:
+        if self._file:
             self._file.close()
             self._file = None
 
