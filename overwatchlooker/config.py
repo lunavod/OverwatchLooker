@@ -5,13 +5,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Analyzer backend: "anthropic" or "codex"
-_analyzer_raw = os.environ.get("ANALYZER", "anthropic")
+_analyzer_raw = os.environ.get("ANALYZER", "codex")
 # Backward compat: "claude" -> "anthropic"
 ANALYZER: str = "anthropic" if _analyzer_raw == "claude" else _analyzer_raw
 
 # Claude Vision settings
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_MODEL: str = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+SONNET_RANK_TIERS: bool = os.environ.get("SONNET_RANK_TIERS", "").lower() in ("1", "true", "yes")
 MAX_TOKENS: int = 16000
 
 # Codex (ChatGPT) settings

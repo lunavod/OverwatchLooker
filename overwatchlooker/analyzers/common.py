@@ -1,13 +1,31 @@
 """Shared schema, formatting, and cost logging for all analyzers."""
 
 import datetime
+import io
 import json
 import logging
 from pathlib import Path
 
+from PIL import Image
+
 _logger = logging.getLogger("overwatchlooker")
 
 _COST_LOG = Path(__file__).parent.parent.parent / "api_costs.jsonl"
+
+# Crop regions (fraction of image: x1, y1, x2, y2)
+NAMES_REGION = (0.15, 0.15, 0.45, 0.85)
+RANK_REGION = (0.55, 0.0, 1.0, 0.13)
+
+
+def crop_region(png_bytes: bytes, region: tuple[float, float, float, float]) -> bytes:
+    """Crop a region from the image. Region is (x1, y1, x2, y2) as fractions."""
+    img = Image.open(io.BytesIO(png_bytes))
+    w, h = img.size
+    x1, y1, x2, y2 = region
+    crop = img.crop((int(w * x1), int(h * y1), int(w * x2), int(h * y2)))
+    buf = io.BytesIO()
+    crop.save(buf, format="PNG")
+    return buf.getvalue()
 
 # JSON schema for structured output — matches OverwatchStatsMCP submit_match format
 MATCH_SCHEMA = {
@@ -41,6 +59,26 @@ MATCH_SCHEMA = {
                 "type": "string",
                 "enum": ["VICTORY", "DEFEAT", "UNKNOWN"],
                 "description": "Match result from ATHENA subtitle text, audio hint, or UNKNOWN.",
+            },
+            "rank_range": {
+                "type": ["object", "null"],
+                "description": "Competitive match rank range shown in the top-right corner. null if not visible (e.g. quickplay).",
+                "properties": {
+                    "min_rank": {
+                        "type": "string",
+                        "description": "Lower bound rank, e.g. 'Bronze 2', 'Silver 5', 'Gold 1'.",
+                    },
+                    "max_rank": {
+                        "type": "string",
+                        "description": "Upper bound rank, e.g. 'Gold 1', 'Platinum 3', 'Diamond 5'.",
+                    },
+                    "is_wide": {
+                        "type": "boolean",
+                        "description": "True if 'WIDE MATCH' label is shown (min and max ranks are far apart).",
+                    },
+                },
+                "required": ["min_rank", "max_rank", "is_wide"],
+                "additionalProperties": False,
             },
             "players": {
                 "type": "array",
@@ -142,7 +180,7 @@ MATCH_SCHEMA = {
         },
         "required": [
             "not_ow2_tab", "map_name", "duration", "mode",
-            "queue_type", "result", "players",
+            "queue_type", "result", "rank_range", "players",
         ],
         "additionalProperties": False,
     },
@@ -211,6 +249,16 @@ Do NOT infer competitive from player titles, skill level, or any other cue.
 - For result: look for ATHENA subtitle text ("VICTORY"/"DEFEAT") overlaying \
 the scoreboard. If absent, use the audio hint from the user message if provided. \
 Otherwise use "UNKNOWN".
+- For rank_range: in competitive matches, the top-right area shows \
+"MATCH RANK RANGE:" with two rank icons and division numbers (e.g. "3" and "5"). \
+Identify ranks by icon color and shape: \
+Bronze = brown/copper angular V, Silver = grey/white angular V, \
+Gold = yellow/golden angular V, Platinum = teal/cyan angular V, \
+Diamond = blue/purple angular V with facets, Master = golden/ornate wings, \
+Grandmaster = golden wings with a star, Champion = red/crimson wings. \
+Each tier has divisions 5 (lowest) to 1 (highest). \
+If "WIDE MATCH" is shown below, set is_wide=true. \
+Set rank_range to null if not visible (quickplay or unranked).
 - DMG/H/MIT are raw integers with no commas (e.g. 8990 not "8,990").
 - Hero stats panel (right side): only visible for the selected player. \
 The top-right shows a big highlighted number (is_featured=true). \
@@ -339,6 +387,15 @@ def format_match(data: dict, hero_map: dict[str, str] | None = None,
     lines.append(f"MODE: {data['mode']}")
     lines.append(f"QUEUE TYPE: {data['queue_type']}")
     lines.append(f"RESULT: {data['result']}")
+    if data.get("rank_range"):
+        rr = data["rank_range"]
+        if rr.get("min_rank") and rr.get("max_rank"):
+            rank_str = f"{rr['min_rank']} - {rr['max_rank']}"
+            if rr.get("is_wide"):
+                rank_str += " (WIDE)"
+            lines.append(f"RANK RANGE: {rank_str}")
+        elif rr.get("is_wide"):
+            lines.append("RANK RANGE: WIDE MATCH")
     lines.append("")
 
     for team_key, team_label in [("ALLY", "YOUR TEAM"), ("ENEMY", "ENEMY TEAM")]:

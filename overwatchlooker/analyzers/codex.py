@@ -1,13 +1,11 @@
 """Codex (ChatGPT) vision-based scoreboard analyzer for Overwatch 2 Tab screens."""
 
 import base64
-import io
 import json
 import logging
 import time
 
 import codex_open_client
-from PIL import Image
 
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM Router").setLevel(logging.WARNING)
@@ -17,24 +15,12 @@ from litellm import cost_per_token  # noqa: E402
 
 litellm.suppress_debug_info = True
 
-from overwatchlooker.analyzers.common import MATCH_SCHEMA, SYSTEM_PROMPT, log_cost
+from overwatchlooker.analyzers.common import (
+    MATCH_SCHEMA, NAMES_REGION, RANK_REGION, SYSTEM_PROMPT, crop_region, log_cost,
+)
 from overwatchlooker.config import CODEX_MODEL, CODEX_REASONING, OVERWATCH_USERNAME
 
 _logger = logging.getLogger("overwatchlooker")
-
-# Scoreboard player names region (fraction of image: x1, y1, x2, y2)
-_NAMES_REGION = (0.15, 0.15, 0.45, 0.85)
-
-
-def _crop_names(png_bytes: bytes) -> bytes:
-    """Crop the player names area from the scoreboard for better OCR."""
-    img = Image.open(io.BytesIO(png_bytes))
-    w, h = img.size
-    x1, y1, x2, y2 = _NAMES_REGION
-    crop = img.crop((int(w * x1), int(h * y1), int(w * x2), int(h * y2)))
-    buf = io.BytesIO()
-    crop.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 def _to_data_url(png_bytes: bytes) -> str:
@@ -47,7 +33,8 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
     """Send screenshot to Codex/ChatGPT and return structured match data."""
     from overwatchlooker.display import print_status
 
-    names_crop = _crop_names(png_bytes)
+    names_crop = crop_region(png_bytes, NAMES_REGION)
+    rank_crop = crop_region(png_bytes, RANK_REGION)
     from overwatchlooker.screenshot import resize_for_analyzer
     png_bytes = resize_for_analyzer(png_bytes, "codex")
     crop_count = len(hero_crops) if hero_crops else 0
@@ -58,7 +45,8 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
 
     user_text = (
         "Analyze this Overwatch 2 Tab screen screenshot. "
-        "The second image is a zoomed crop of the player names area for better readability."
+        "The second image is a zoomed crop of the player names area for better readability. "
+        "The third image is a zoomed crop of the top-right corner showing the mode, rank range, and match time."
     )
     if hero_crops:
         user_text += (
@@ -81,6 +69,7 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
     content = [
         codex_open_client.InputImage(image_url=_to_data_url(png_bytes), detail="high"),
         codex_open_client.InputImage(image_url=_to_data_url(names_crop), detail="high"),
+        codex_open_client.InputImage(image_url=_to_data_url(rank_crop), detail="high"),
     ]
     if hero_crops:
         for hero_name, crop_bytes in hero_crops.items():

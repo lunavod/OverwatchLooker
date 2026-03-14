@@ -2,7 +2,7 @@
 
 Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero switches), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
 
-Two analyzer backends: **Claude Vision** (cloud, default) or **ChatGPT/Codex** (cloud). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
+Two analyzer backends: **ChatGPT/Codex** (cloud, default) or **Claude Vision** (cloud). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
 
 ## Setup
 
@@ -15,10 +15,10 @@ uv sync
 Create a `.env` file:
 
 ```env
-# Analyzer backend: "anthropic" (default) or "codex"
-ANALYZER=anthropic
+# Analyzer backend: "codex" (default) or "anthropic"
+ANALYZER=codex
 
-# Required for Anthropic backend
+# Required for Anthropic backend (if using ANALYZER=anthropic)
 ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional: player identity (improves self-player detection)
@@ -147,21 +147,22 @@ Only activates when `overwatch.exe` is the foreground window. 30-second cooldown
 
 ## Analyzer backends
 
-### Claude Vision (`ANALYZER=anthropic`, default)
+### ChatGPT/Codex (`ANALYZER=codex`, default)
 
-Sends the screenshot to Claude with a structured JSON schema prompt. Returns structured match data (map, mode, queue type, result, all player stats, hero-specific stats). Costs are logged to `api_costs.jsonl`.
-
-- Model: configurable via `ANTHROPIC_MODEL` (default: `claude-sonnet-4-6`)
-- Uses JSON Schema output for reliable structured extraction
-- If `OVERWATCH_USERNAME` is set, the model is instructed to always identify that player as `is_self`
-- Screenshots are downscaled to 1568px max width before sending
-
-### ChatGPT/Codex (`ANALYZER=codex`)
-
-Uses the ChatGPT/Codex API with the same structured schema. Supports per-hero crop images for multi-hero analysis.
+Uses the ChatGPT/Codex API with structured JSON schema output. Returns match data including map, mode, queue type, result, player stats, hero-specific stats, and competitive rank range. Costs are logged to `api_costs.jsonl`.
 
 - Model: configurable via `CODEX_MODEL` (default: `gpt-5.3-codex`)
+- `gpt-5.3-codex` is the most reliable model for reading unusual/stylized usernames — most other models (including 5.4) tend to misread them
 - Optional reasoning effort via `CODEX_REASONING` (`low`, `medium`, `high`, `xhigh`)
+- Sends zoomed crops of player names and rank area for better readability
+- Supports per-hero crop images for multi-hero analysis
+
+### Claude Vision (`ANALYZER=anthropic`)
+
+Sends the screenshot to Claude with a structured JSON schema prompt. Same feature set as Codex, with one caveat: Claude Sonnet cannot reliably identify competitive rank tier icons, so rank tiers are disabled by default (only wide match detection). Claude Opus identifies them correctly.
+
+- Model: configurable via `ANTHROPIC_MODEL` (default: `claude-sonnet-4-6`)
+- Screenshots are downscaled to 1568px max width before sending
 
 ## Recording and replay
 
@@ -187,9 +188,10 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ANALYZER` | `"anthropic"` | Backend: `"anthropic"` or `"codex"` |
+| `ANALYZER` | `"codex"` | Backend: `"codex"` or `"anthropic"` |
 | `ANTHROPIC_API_KEY` | -- | Required for Anthropic backend |
 | `ANTHROPIC_MODEL` | `"claude-sonnet-4-6"` | Claude model to use |
+| `SONNET_RANK_TIERS` | `false` | Enable rank tier extraction on Sonnet (unreliable) |
 | `CODEX_MODEL` | `"gpt-5.3-codex"` | ChatGPT/Codex model to use |
 | `CODEX_REASONING` | -- | Reasoning effort: `low`, `medium`, `high`, `xhigh` |
 | `MAX_TOKENS` | `16000` | Max response tokens |

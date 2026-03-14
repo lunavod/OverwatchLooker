@@ -37,6 +37,15 @@ def submit_match(
         "is_backfill": is_backfill,
     }
 
+    if data.get("rank_range"):
+        rr = data["rank_range"]
+        if rr.get("min_rank"):
+            args["rank_min"] = rr["min_rank"]
+        if rr.get("max_rank"):
+            args["rank_max"] = rr["max_rank"]
+        if rr.get("is_wide"):
+            args["is_wide_match"] = True
+
     if png_bytes:
         args["screenshot_uploads"] = [{
             "data": base64.standard_b64encode(png_bytes).decode("utf-8"),
