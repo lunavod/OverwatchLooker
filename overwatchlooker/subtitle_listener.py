@@ -118,8 +118,9 @@ def process_subtitle_frame(frame_bgr: np.ndarray, sim_time: float,
         username = m.group(1).upper()
         raw_hero = m.group(2).strip().title()
         if username != "ATHENA":
-            hero = match_hero_name(raw_hero) or raw_hero
-            frame_heroes[username] = hero
+            hero = match_hero_name(raw_hero)
+            if hero:
+                frame_heroes[username] = hero
 
     for username, hero in frame_heroes.items():
         history = state.hero_history.get(username)
@@ -299,9 +300,9 @@ class SubtitleListener:
             username = m.group(1).upper()
             raw_hero = m.group(2).strip().title()
             if username != "ATHENA":
-                # Fuzzy-match to canonical hero name
-                hero = match_hero_name(raw_hero) or raw_hero
-                frame_heroes[username] = hero
+                hero = match_hero_name(raw_hero)
+                if hero:
+                    frame_heroes[username] = hero
 
         for username, hero in frame_heroes.items():
             history = self._hero_history.get(username)

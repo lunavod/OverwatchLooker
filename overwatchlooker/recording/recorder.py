@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import cv2
 import numpy as np
 import zstandard as zstd
 
@@ -19,7 +20,8 @@ _logger = logging.getLogger("overwatchlooker")
 
 _RECORDINGS_DIR = Path(__file__).parent.parent.parent / "recordings"
 _TARGET_FPS = 10
-_ZSTD_LEVEL = 1  # fastest compression; keeps up with 10fps 4K capture
+_ZSTD_LEVEL = 1  # fastest compression
+_RECORD_MAX_HEIGHT = 1080  # downscale to 1080p for manageable disk I/O
 
 
 class Recorder:
@@ -42,6 +44,8 @@ class Recorder:
         self._frame_count = 0
         self._frames_written = 0
         self._resolution: tuple[int, int] = (0, 0)
+        self._record_resolution: tuple[int, int] = (0, 0)  # actual recorded resolution
+        self._record_scale: float = 1.0
         self._held_keys: set[str] = set()  # track held keys to filter OS key repeat
         self._compressor = zstd.ZstdCompressor(level=_ZSTD_LEVEL)
 
@@ -65,7 +69,6 @@ class Recorder:
         line = json.dumps(entry, ensure_ascii=False)
         try:
             self._events_file.write(line + "\n")
-            self._events_file.flush()
         except Exception as e:
             _logger.warning(f"Failed to log event: {e}")
 
@@ -75,6 +78,9 @@ class Recorder:
             return
         if self._frame_count == 0:
             self._start_tick = tick
+        if self._record_scale != 1.0:
+            frame = cv2.resize(frame, self._record_resolution,
+                               interpolation=cv2.INTER_AREA)
         raw = frame.tobytes()
         with self._queue_lock:
             self._frame_queue.append(raw)
@@ -98,10 +104,20 @@ class Recorder:
 
         self._resolution = resolution
         w, h = resolution
-        _logger.info(f"Recording at {w}x{h} @ {_TARGET_FPS}fps")
+        if h > _RECORD_MAX_HEIGHT:
+            self._record_scale = _RECORD_MAX_HEIGHT / h
+            rw = int(w * self._record_scale)
+            rh = _RECORD_MAX_HEIGHT
+            self._record_resolution = (rw, rh)
+            _logger.info(f"Recording at {rw}x{rh} (downscaled from {w}x{h}) @ {_TARGET_FPS}fps")
+        else:
+            self._record_scale = 1.0
+            self._record_resolution = (w, h)
+            _logger.info(f"Recording at {w}x{h} @ {_TARGET_FPS}fps")
 
-        # Open frames file
-        self._frames_file = open(self._output_dir / "frames.bin", "wb")
+        # Open frames file with large buffer to reduce disk I/O frequency
+        self._frames_file = open(self._output_dir / "frames.bin", "wb",
+                                 buffering=16 * 1024 * 1024)  # 16MB buffer
 
         self._frame_count = 0
         self._frames_written = 0
@@ -138,7 +154,7 @@ class Recorder:
         # Write meta.json
         meta = {
             "start_time": datetime.now().isoformat(),
-            "resolution": list(self._resolution),
+            "resolution": list(self._record_resolution),
             "fps": _TARGET_FPS,
             "frame_count": self._frames_written,
             "duration_seconds": round(duration, 1),
