@@ -41,6 +41,7 @@ def _create_icon_image() -> Image.Image:
 
 _AUDIO_ANALYSIS_DELAY = 5.0  # seconds to wait after audio trigger before analyzing
 _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
+_POST_SUBMIT_COOLDOWN = 30.0  # seconds to ignore tab/crop events after detection
 
 
 class App:
@@ -63,6 +64,7 @@ class App:
         self._subtitle_system: SubtitleSystem | None = None
         self._bus = event_bus
         self._icon: pystray.Icon | None = None
+        self._cooldown_until_tick: int = 0  # ignore tab/crop events until this tick
         if event_bus:
             self._register_commands(event_bus)
 
@@ -79,6 +81,14 @@ class App:
         """Handle quit command from companion app."""
         self._shutdown()
 
+    def _in_post_detection_cooldown(self) -> bool:
+        """Check if tab/crop events should be ignored (post-detection cooldown)."""
+        if self._cooldown_until_tick <= 0:
+            return False
+        if self._tick_loop is None:
+            return False
+        return self._tick_loop._current_tick < self._cooldown_until_tick
+
     def _ws_emit(self, event: dict) -> None:
         """Emit an event to the WebSocket bus if enabled."""
         if self._bus:
@@ -89,6 +99,9 @@ class App:
 
         timestamp is time.monotonic() in live mode, sim_time in replay mode.
         """
+        if self._in_post_detection_cooldown():
+            _logger.debug(f"Tab ignored (post-detection cooldown): {filename}")
+            return
         with self._lock:
             self._valid_tabs.append((png_bytes, timestamp, filename))
             if len(self._valid_tabs) > 2:
@@ -100,6 +113,8 @@ class App:
 
     def store_hero_crop(self, name: str, crop: bytes) -> None:
         """Store a hero panel crop (called by TabCaptureSystem)."""
+        if self._in_post_detection_cooldown():
+            return
         with self._lock:
             if not any(_edit_distance(name.lower(), k.lower()) <= 2
                        for k in self._hero_crops):
@@ -129,6 +144,12 @@ class App:
         """Delayed callback: start analysis after the tick-based delay has elapsed."""
         if self._no_analysis:
             return
+        # Start cooldown: ignore tab/crop events for 30s to prevent stale data leaking
+        if self._tick_loop:
+            fps = self._tick_loop.fps
+            self._cooldown_until_tick = (
+                self._tick_loop._current_tick + int(fps * _POST_SUBMIT_COOLDOWN)
+            )
         with self._lock:
             if self._analyzing:
                 print_status("Analysis already in progress, ignoring detection trigger.")
@@ -328,6 +349,11 @@ class App:
 
     def _on_submit_tab(self, result: str) -> None:
         """Manually submit last tab screenshot with a given result."""
+        if self._tick_loop:
+            fps = self._tick_loop.fps
+            self._cooldown_until_tick = (
+                self._tick_loop._current_tick + int(fps * _POST_SUBMIT_COOLDOWN)
+            )
         with self._lock:
             if self._analyzing:
                 print_status("Analysis already in progress.")

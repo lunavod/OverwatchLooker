@@ -64,6 +64,75 @@ class TestHeroCropLifecycle:
         assert app._hero_crops == {}
 
 
+class TestPostSubmitCooldown:
+    """After data is gathered for analysis, tab/crop events are ignored for 30s of ticks."""
+
+    @pytest.fixture
+    def app_with_tick_loop(self):
+        from overwatchlooker.tray import App
+        a = App()
+        a._tick_loop = MagicMock()
+        a._tick_loop.fps = 10
+        a._tick_loop._current_tick = 1000
+        a._analyzing = False
+        a._detector = MagicMock()
+        a._detector.hero_map = {}
+        a._detector.hero_history = {}
+        return a
+
+    def test_cooldown_set_on_detection(self, app_with_tick_loop):
+        app = app_with_tick_loop
+        with patch.object(app, "_run_analysis"):
+            app._on_detection("VICTORY")
+        # 30s * 10fps = 300 ticks after current tick 1000
+        assert app._cooldown_until_tick == 1300
+
+    def test_cooldown_set_on_manual_submit(self, app_with_tick_loop):
+        app = app_with_tick_loop
+        with patch.object(app, "_run_analysis"):
+            app._on_submit_tab("DEFEAT")
+        assert app._cooldown_until_tick == 1300
+
+    def test_tab_ignored_during_cooldown(self, app_with_tick_loop):
+        app = app_with_tick_loop
+        with patch.object(app, "_run_analysis"):
+            app._on_detection("VICTORY")
+        # Tick loop is at 1000, cooldown until 1300 — should ignore
+        app.store_valid_tab(b"png", 1.0, "tab.png")
+        assert len(app._valid_tabs) == 0
+
+    def test_crop_ignored_during_cooldown(self, app_with_tick_loop):
+        app = app_with_tick_loop
+        with patch.object(app, "_run_analysis"):
+            app._on_detection("VICTORY")
+        app.store_hero_crop("Reinhardt", b"crop")
+        assert app._hero_crops == {}
+
+    def test_tab_accepted_after_cooldown(self, app_with_tick_loop):
+        app = app_with_tick_loop
+        with patch.object(app, "_run_analysis"):
+            app._on_detection("VICTORY")
+        # Advance tick past cooldown
+        app._tick_loop._current_tick = 1300
+        app.store_valid_tab(b"png", 1.0, "tab.png")
+        assert len(app._valid_tabs) == 1
+
+    def test_crop_accepted_after_cooldown(self, app_with_tick_loop):
+        app = app_with_tick_loop
+        with patch.object(app, "_run_analysis"):
+            app._on_detection("VICTORY")
+        app._tick_loop._current_tick = 1300
+        app.store_hero_crop("Reinhardt", b"crop")
+        assert "Reinhardt" in app._hero_crops
+
+    def test_no_cooldown_without_tick_loop(self):
+        """If tick loop is not running (e.g. image mode), no cooldown applies."""
+        from overwatchlooker.tray import App
+        a = App()
+        a.store_valid_tab(b"png", 1.0, "tab.png")
+        assert len(a._valid_tabs) == 1
+
+
 class TestAnalysisFlow:
     def test_analyzing_lock_prevents_double(self, app):
         """Second detection while analyzing should be ignored."""
