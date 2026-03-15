@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import websockets
@@ -17,12 +18,17 @@ _logger = logging.getLogger("overwatchlooker")
 # Default port for the WebSocket server
 DEFAULT_PORT = 42685
 
+# Valid commands that clients can send
+COMMANDS = {"start_listening", "stop_listening", "toggle_recording",
+            "submit_win", "submit_loss", "quit"}
+
 
 class EventBus:
     """Thread-safe bridge between sync app code and async WebSocket server.
 
     App threads call emit() to post events; the async server loop picks them
-    up and broadcasts to all connected clients.
+    up and broadcasts to all connected clients.  Companion apps can send
+    commands back; registered handlers are invoked on the main thread.
     """
 
     def __init__(self) -> None:
@@ -39,6 +45,7 @@ class EventBus:
             "recording": False,
         }
         self._lock = threading.Lock()
+        self._handlers: dict[str, Callable[[], None]] = {}
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -77,6 +84,26 @@ class EventBus:
     def get_state(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._state)
+
+    def register(self, command: str, handler: Callable[[], None]) -> None:
+        """Register a handler for a command from companion apps."""
+        self._handlers[command] = handler
+
+    def handle_command(self, command: str) -> dict[str, Any]:
+        """Dispatch a command. Returns a response dict to send back."""
+        if command not in COMMANDS:
+            return {"type": "error", "command": command,
+                    "message": f"Unknown command: {command}"}
+        handler = self._handlers.get(command)
+        if handler is None:
+            return {"type": "error", "command": command,
+                    "message": f"Command not available: {command}"}
+        try:
+            handler()
+            return {"type": "ok", "command": command}
+        except Exception as e:
+            _logger.error(f"Command {command} failed: {e}")
+            return {"type": "error", "command": command, "message": str(e)}
 
     async def consume(self) -> dict[str, Any]:
         return await self._queue.get()
@@ -144,9 +171,23 @@ class WsServer:
             # Send current state snapshot on connect
             state = self._bus.get_state()
             await ws.send(json.dumps(state))
-            # Keep connection alive; ignore incoming messages
-            async for _ in ws:
-                pass
+            # Process incoming commands
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    await ws.send(json.dumps(
+                        {"type": "error", "message": "Invalid JSON"}))
+                    continue
+                cmd = msg.get("command")
+                if not cmd:
+                    await ws.send(json.dumps(
+                        {"type": "error", "message": "Missing 'command' field"}))
+                    continue
+                # Run handler in a thread to avoid blocking the async loop
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None, self._bus.handle_command, cmd)
+                await ws.send(json.dumps(response))
         finally:
             self._clients.discard(ws)
             _logger.info(f"Companion disconnected ({len(self._clients)} clients)")

@@ -1,12 +1,13 @@
-"""Tests for WebSocket server: EventBus state management and WsServer integration."""
+"""Tests for WebSocket server: EventBus state management, commands, and WsServer integration."""
 
 import asyncio
 import json
+from unittest.mock import MagicMock
 
 import pytest
 import websockets
 
-from overwatchlooker.ws_server import EventBus, WsServer
+from overwatchlooker.ws_server import COMMANDS, EventBus, WsServer
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +134,63 @@ class TestEventBusState:
         state = bus.get_state()
         # analyzing type is not handled in _update_state
         assert state["analyzing"] is False
+
+
+# ---------------------------------------------------------------------------
+# EventBus command handling
+# ---------------------------------------------------------------------------
+
+class TestEventBusCommands:
+    def test_register_and_handle(self):
+        bus = EventBus()
+        handler = MagicMock()
+        bus.register("start_listening", handler)
+        result = bus.handle_command("start_listening")
+        handler.assert_called_once()
+        assert result["type"] == "ok"
+        assert result["command"] == "start_listening"
+
+    def test_unknown_command(self):
+        bus = EventBus()
+        result = bus.handle_command("explode")
+        assert result["type"] == "error"
+        assert "Unknown command" in result["message"]
+
+    def test_unregistered_valid_command(self):
+        bus = EventBus()
+        result = bus.handle_command("quit")
+        assert result["type"] == "error"
+        assert "not available" in result["message"]
+
+    def test_handler_exception(self):
+        bus = EventBus()
+        bus.register("quit", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        result = bus.handle_command("quit")
+        assert result["type"] == "error"
+        assert "boom" in result["message"]
+
+    def test_all_valid_commands(self):
+        """All COMMANDS constants are recognized (not 'unknown')."""
+        bus = EventBus()
+        for cmd in COMMANDS:
+            result = bus.handle_command(cmd)
+            assert result["type"] == "error"
+            assert "not available" in result["message"]  # registered but no handler
+
+
+class TestAppRegistersCommands:
+    def test_commands_registered_on_bus(self):
+        bus = EventBus()
+        from overwatchlooker.tray import App
+        App(event_bus=bus)
+        for cmd in ["start_listening", "stop_listening", "toggle_recording",
+                     "submit_win", "submit_loss", "quit"]:
+            assert cmd in bus._handlers
+
+    def test_no_commands_without_bus(self):
+        from overwatchlooker.tray import App
+        app = App()
+        assert app._bus is None
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +328,82 @@ class TestWsServerIntegration:
                     msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
                     assert msg["active"] is True
                     assert msg["hero_map"]["P1"] == "Ana"
+            asyncio.run(_test())
+        finally:
+            srv.stop()
+
+
+class TestWsServerCommands:
+    def test_command_ok_response(self):
+        bus, port, srv = _start_server()
+        handler = MagicMock()
+        bus.register("stop_listening", handler)
+        try:
+            async def _test():
+                async with websockets.connect(f"ws://localhost:{port}") as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)  # state
+                    await ws.send(json.dumps({"command": "stop_listening"}))
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                    assert msg["type"] == "ok"
+                    assert msg["command"] == "stop_listening"
+            asyncio.run(_test())
+            handler.assert_called_once()
+        finally:
+            srv.stop()
+
+    def test_unknown_command_response(self):
+        bus, port, srv = _start_server()
+        try:
+            async def _test():
+                async with websockets.connect(f"ws://localhost:{port}") as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await ws.send(json.dumps({"command": "self_destruct"}))
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                    assert msg["type"] == "error"
+                    assert "Unknown command" in msg["message"]
+            asyncio.run(_test())
+        finally:
+            srv.stop()
+
+    def test_invalid_json_response(self):
+        bus, port, srv = _start_server()
+        try:
+            async def _test():
+                async with websockets.connect(f"ws://localhost:{port}") as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await ws.send("not json at all")
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                    assert msg["type"] == "error"
+                    assert "Invalid JSON" in msg["message"]
+            asyncio.run(_test())
+        finally:
+            srv.stop()
+
+    def test_missing_command_field(self):
+        bus, port, srv = _start_server()
+        try:
+            async def _test():
+                async with websockets.connect(f"ws://localhost:{port}") as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await ws.send(json.dumps({"action": "stop"}))
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                    assert msg["type"] == "error"
+                    assert "Missing" in msg["message"]
+            asyncio.run(_test())
+        finally:
+            srv.stop()
+
+    def test_handler_error_response(self):
+        bus, port, srv = _start_server()
+        bus.register("quit", lambda: (_ for _ in ()).throw(RuntimeError("test error")))
+        try:
+            async def _test():
+                async with websockets.connect(f"ws://localhost:{port}") as ws:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await ws.send(json.dumps({"command": "quit"}))
+                    msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                    assert msg["type"] == "error"
+                    assert "test error" in msg["message"]
             asyncio.run(_test())
         finally:
             srv.stop()

@@ -12,7 +12,7 @@ The server listens on `ws://127.0.0.1:42685` by default. Override the port with 
 
 Connect to the WebSocket URL. On connect, the server immediately sends a **state snapshot** — a JSON message containing the current accumulated state. After that, real-time events are pushed as they occur.
 
-The server is read-only from the client's perspective: messages sent by the client are ignored.
+The companion app can send **commands** to control OverwatchLooker (see [Commands](#commands) below).
 
 ## Message format
 
@@ -239,6 +239,45 @@ Each hero in the `heroes` array:
 | `hero_name` | `string` | Hero name (Title Case) |
 | `started_at` | `string?` | When this hero was first played (`M:SS` relative to match start) |
 | `stats` | `array` | Hero-specific stats from the Tab screen |
+
+## Commands
+
+Companion apps can send JSON messages to control OverwatchLooker. Each message must have a `command` field:
+
+```json
+{ "command": "<command_name>" }
+```
+
+The server responds with either an `ok` or `error` response:
+
+```json
+{ "type": "ok", "command": "stop_listening" }
+{ "type": "error", "command": "explode", "message": "Unknown command: explode" }
+```
+
+### Available commands
+
+| Command | Description |
+|---------|-------------|
+| `start_listening` | Start the tick loop and begin capturing/detecting |
+| `stop_listening` | Stop the tick loop and detection |
+| `toggle_recording` | Start or stop screen recording |
+| `submit_win` | Manually trigger analysis with VICTORY result |
+| `submit_loss` | Manually trigger analysis with DEFEAT result |
+| `quit` | Shut down the OverwatchLooker process |
+
+### Error responses
+
+| Scenario | Response |
+|----------|----------|
+| Invalid JSON | `{"type": "error", "message": "Invalid JSON"}` |
+| Missing `command` field | `{"type": "error", "message": "Missing 'command' field"}` |
+| Unknown command | `{"type": "error", "command": "...", "message": "Unknown command: ..."}` |
+| Handler failed | `{"type": "error", "command": "...", "message": "..."}` |
+
+Commands are executed synchronously — the response is sent after the handler completes. State change events (e.g. `state` with `active: true`) are broadcast to all clients as a side effect.
+
+---
 
 ## Event timeline
 

@@ -62,6 +62,22 @@ class App:
         self._tick_loop: TickLoop | None = None
         self._subtitle_system: SubtitleSystem | None = None
         self._bus = event_bus
+        self._icon: pystray.Icon | None = None
+        if event_bus:
+            self._register_commands(event_bus)
+
+    def _register_commands(self, bus: EventBus) -> None:
+        """Register command handlers on the event bus."""
+        bus.register("start_listening", self._start_listening)
+        bus.register("stop_listening", self._stop_listening)
+        bus.register("toggle_recording", lambda: self._on_toggle_recording(None, None))  # type: ignore[arg-type]
+        bus.register("submit_win", lambda: self._on_submit_tab("VICTORY"))
+        bus.register("submit_loss", lambda: self._on_submit_tab("DEFEAT"))
+        bus.register("quit", self._ws_quit)
+
+    def _ws_quit(self) -> None:
+        """Handle quit command from companion app."""
+        self._shutdown()
 
     def _ws_emit(self, event: dict) -> None:
         """Emit an event to the WebSocket bus if enabled."""
@@ -402,6 +418,8 @@ class App:
 
     def _rebuild_menu(self) -> None:
         """Rebuild the tray menu to reflect current state."""
+        if self._icon is None:
+            return
         label = "Stop Listening" if self._active else "Start Listening"
         rec_label = "Stop Recording" if (self._recorder and self._recorder.is_recording) else "Start Recording"
         self._icon.menu = pystray.Menu(
