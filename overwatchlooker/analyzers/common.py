@@ -15,7 +15,17 @@ _COST_LOG = Path(__file__).parent.parent.parent / "api_costs.jsonl"
 
 # Crop regions (fraction of image: x1, y1, x2, y2)
 NAMES_REGION = (0.15, 0.15, 0.45, 0.85)
-RANK_REGION = (0.55, 0.0, 1.0, 0.13)
+RANK_REGION = (0.75, 0.0, 1.0, 0.13)
+
+# Rank tier reference image (icons with labels for visual matching)
+_RANKS_REF_PATH = Path(__file__).parent.parent / "ranks.png"
+
+
+def get_ranks_reference() -> bytes | None:
+    """Load the rank tier reference image if available."""
+    if _RANKS_REF_PATH.exists():
+        return _RANKS_REF_PATH.read_bytes()
+    return None
 
 
 def crop_region(png_bytes: bytes, region: tuple[float, float, float, float]) -> bytes:

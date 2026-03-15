@@ -6,6 +6,7 @@ import json
 from overwatchlooker.analyzers.common import (
     MATCH_SCHEMA,
     format_match,
+    get_ranks_reference,
     log_cost,
     make_schema_with_extra_heroes,
     merge_heroes,
@@ -300,6 +301,22 @@ class TestFormatMatch:
         data["players"][0]["eliminations"] = None
         text = format_match(data)
         assert "- |" in text
+
+
+class TestGetRanksReference:
+    def test_returns_bytes_when_exists(self):
+        result = get_ranks_reference()
+        assert isinstance(result, bytes)
+        # PNG magic bytes
+        assert result[:4] == b"\x89PNG"
+
+    def test_returns_none_when_missing(self, monkeypatch):
+        from pathlib import Path
+        monkeypatch.setattr(
+            "overwatchlooker.analyzers.common._RANKS_REF_PATH",
+            Path("/nonexistent/ranks.png"),
+        )
+        assert get_ranks_reference() is None
 
 
 class TestLogCost:

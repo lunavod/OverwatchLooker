@@ -155,7 +155,7 @@ Uses the ChatGPT/Codex API with structured JSON schema output. Returns match dat
 - Model: configurable via `CODEX_MODEL` (default: `gpt-5.3-codex`)
 - `gpt-5.3-codex` is the most reliable model for reading unusual/stylized usernames — most other models (including 5.4) tend to misread them
 - Optional reasoning effort via `CODEX_REASONING` (`low`, `medium`, `high`, `xhigh`)
-- Sends zoomed crops of player names and rank area for better readability
+- Sends zoomed crops of player names and rank area for better readability, plus a rank tier icon reference chart
 - Supports per-hero crop images for multi-hero analysis
 
 ### Claude Vision (`ANALYZER=anthropic`)
@@ -218,6 +218,7 @@ overwatchlooker/
   subtitle_listener.py           # Subtitle-based detection + hero switch tracking
   heroes.py                      # Hero name fuzzy matching (Levenshtein)
   heroes.txt                     # Complete list of OW2 heroes
+  ranks.png                      # Rank tier icon reference for analyzers
   analyzers/
     __init__.py                  # Analyzer registry
     anthropic.py                 # Claude Vision backend

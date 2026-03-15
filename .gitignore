@@ -20,6 +20,7 @@ wheels/
 *.png
 *.gif
 !tests/fixtures/*.png
+!overwatchlooker/ranks.png
 
 # Logs
 *.log

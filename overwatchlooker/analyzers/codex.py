@@ -16,7 +16,7 @@ from litellm import cost_per_token  # noqa: E402
 litellm.suppress_debug_info = True
 
 from overwatchlooker.analyzers.common import (  # noqa: E402
-    MATCH_SCHEMA, NAMES_REGION, RANK_REGION, SYSTEM_PROMPT, crop_region, log_cost,
+    MATCH_SCHEMA, NAMES_REGION, RANK_REGION, SYSTEM_PROMPT, crop_region, get_ranks_reference, log_cost,
 )
 from overwatchlooker.config import CODEX_MODEL, CODEX_REASONING, OVERWATCH_USERNAME  # noqa: E402
 
@@ -43,11 +43,19 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
 
     client = codex_open_client.CodexClient()
 
+    ranks_ref = get_ranks_reference()
     user_text = (
         "Analyze this Overwatch 2 Tab screen screenshot. "
         "The second image is a zoomed crop of the player names area for better readability. "
         "The third image is a zoomed crop of the top-right corner showing the mode, rank range, and match time."
     )
+    if ranks_ref:
+        user_text += (
+            " The fourth image is a reference chart of all competitive rank tier icons "
+            "(Bronze, Silver, Gold, Platinum, Diamond, Master, Grandmaster, Champion) — "
+            "use it to identify the rank icons in the match screenshot. "
+            "The number on the rank icon (1-5) is the division within that tier."
+        )
     if hero_crops:
         user_text += (
             f"\n\nAdditional images show hero stat panels for {len(hero_crops)} other heroes "
@@ -71,6 +79,9 @@ def analyze_screenshot(png_bytes: bytes, audio_result: str | None = None,
         codex_open_client.InputImage(image_url=_to_data_url(names_crop), detail="high"),
         codex_open_client.InputImage(image_url=_to_data_url(rank_crop), detail="high"),
     ]
+    if ranks_ref:
+        content.append(codex_open_client.InputImage(
+            image_url=_to_data_url(ranks_ref), detail="high"))
     if hero_crops:
         for hero_name, crop_bytes in hero_crops.items():
             content.append(codex_open_client.InputImage(
