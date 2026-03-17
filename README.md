@@ -1,8 +1,8 @@
 # OverwatchLooker
 
-Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero switches), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
+Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero switches, player joins/leaves), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
 
-Two analyzer backends: **ChatGPT/Codex** (cloud, default) or **Claude Vision** (cloud). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
+Two analyzer backends: **ChatGPT/Codex** (cloud, default) or **Claude Vision** (cloud). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Player joins/leaves are tracked via **chat OCR**. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
 
 ## Setup
 
@@ -146,6 +146,10 @@ Monitors the bottom-center of the screen for subtitle text using Tesseract (via 
 
 Only activates when `overwatch.exe` is the foreground window. 30-second cooldown between detections.
 
+### Chat OCR
+
+Monitors the bottom-left of the screen for yellow chat text. Detects player join/leave events (`[player] joined the game`, `[player] left the game`) using Tesseract. Fuzzy dedup prevents OCR noise from creating duplicate events. Detected join times are stored as `joined_at` on player records when uploading to MCP.
+
 ## Analyzer backends
 
 ### ChatGPT/Codex (`ANALYZER=codex`, default)
@@ -216,6 +220,7 @@ overwatchlooker/
   hotkey.py                      # Tab key listener (pynput, Windows foreground check)
   screenshot.py                  # Screen capture (dxcam), OW2 Tab validation, Tesseract OCR
   subtitle_listener.py           # Subtitle-based detection + hero switch tracking
+  chat_listener.py               # Chat OCR for player join/leave detection
   heroes.py                      # Hero name fuzzy matching (Levenshtein)
   heroes.txt                     # Complete list of OW2 heroes
   ranks.png                      # Rank tier icon reference for analyzers
@@ -227,6 +232,7 @@ overwatchlooker/
   recording/
     recorder.py                  # zstd-compressed frame + keyboard recording
     replay.py                    # Frame decompression + event replay
+    export_mp4.py                # Convert recordings to MP4 video
   cache.py                       # SHA256-based disk cache for analysis results
   display.py                     # Formatting, logging, safe stdout for pythonw
   notification.py                # Clipboard, tkinter overlay, audio chime

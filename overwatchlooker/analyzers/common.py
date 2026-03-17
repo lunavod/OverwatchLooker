@@ -302,13 +302,15 @@ def log_cost(model: str, input_tokens: int, output_tokens: int, cost: float,
 
 
 def merge_heroes(data: dict, hero_map: dict[str, str] | None = None,
-                 hero_history: dict[str, list[tuple[float, str]]] | None = None) -> dict:
+                 hero_history: dict[str, list[tuple[float, str]]] | None = None,
+                 player_changes: list[tuple[float, str, str]] | None = None) -> dict:
     """Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes arrays.
 
     Mutates and returns data with:
     - Each player gets a 'heroes' array
     - 'extra_hero_stats' is consumed and removed from top-level
     - 'hero' field is removed from each player (heroes[] is canonical)
+    - 'player_changes' stored at top level if provided
     """
     from overwatchlooker.heroes import edit_distance as _edit_distance
 
@@ -319,6 +321,17 @@ def merge_heroes(data: dict, hero_map: dict[str, str] | None = None,
     # Compute match_start from hero_history timestamps
     all_times = [t for entries in hero_history.values() for t, _ in entries]
     match_start = min(all_times) if all_times else 0.0
+
+    # Store player changes with relative timestamps and set joined_at on players
+    join_times: dict[str, int] = {}  # player_name -> relative seconds
+    if player_changes:
+        data["player_changes"] = [
+            {"time": max(0, int(t - match_start)), "player": p, "event": e}
+            for t, p, e in player_changes
+        ]
+        for t, p, e in player_changes:
+            if e == "joined":
+                join_times[p] = max(0, int(t - match_start))
 
     for p in data["players"]:
         player_name = p["player_name"]
@@ -382,6 +395,10 @@ def merge_heroes(data: dict, hero_map: dict[str, str] | None = None,
         p["heroes"] = heroes
         # Remove old hero field — heroes[] is now canonical
         p.pop("hero", None)
+
+        # Set joined_at from chat-detected join events
+        if player_name in join_times:
+            p["joined_at"] = join_times[player_name]
 
     return data
 
@@ -482,5 +499,14 @@ def format_match(data: dict, hero_map: dict[str, str] | None = None,
                 lines.append("")
                 lines.append("HERO SWITCHES:")
                 lines.extend(switch_lines)
+
+    # Player changes section (players who joined/left during the match)
+    if data.get("player_changes"):
+        lines.append("")
+        lines.append("PLAYER CHANGES:")
+        for change in data["player_changes"]:
+            t = change["time"]
+            mm, ss = divmod(t, 60)
+            lines.append(f"{change['player']} {change['event']} ({mm}:{ss:02d})")
 
     return "\n".join(lines)

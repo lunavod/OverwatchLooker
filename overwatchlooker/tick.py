@@ -20,6 +20,7 @@ from overwatchlooker.screenshot import (
     ocr_hero_name,
     save_screenshot,
 )
+from overwatchlooker.chat_listener import ChatState, process_chat_frame
 from overwatchlooker.subtitle_listener import SubtitleState, process_subtitle_frame
 
 _logger = logging.getLogger("overwatchlooker")
@@ -362,6 +363,33 @@ class SubtitleSystem:
         if self._state.transcript_file:
             self._state.transcript_file.close()
             self._state.transcript_file = None
+
+
+class ChatSystem:
+    """OCR chat detection for player join/leave events, runs every N ticks."""
+
+    def __init__(self, on_player_change=None):
+        self._state = ChatState()
+        self._on_player_change = on_player_change  # callback(player, event, sim_time)
+        self._last_count = 0  # track new events
+
+    def on_tick(self, ctx: TickContext) -> None:
+        process_chat_frame(ctx.frame_bgr, ctx.sim_time, self._state)
+
+        # Emit callbacks for new events
+        if self._on_player_change:
+            while self._last_count < len(self._state.player_changes):
+                sim_time, player, event = self._state.player_changes[self._last_count]
+                self._on_player_change(player, event, sim_time)
+                self._last_count += 1
+
+    @property
+    def player_changes(self) -> list[tuple[float, str, str]]:
+        return list(self._state.player_changes)
+
+    def reset_match(self) -> None:
+        self._state.player_changes.clear()
+        self._last_count = 0
 
 
 # ---------------------------------------------------------------------------

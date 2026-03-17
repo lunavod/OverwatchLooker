@@ -154,6 +154,19 @@ class TestAnalysisFlow:
 
         app._detector.reset_match.assert_called_once()
 
+    def test_chat_system_reset_on_detection(self, app):
+        app._analyzing = False
+        app._detector = MagicMock()
+        app._detector.hero_map = {}
+        app._detector.hero_history = {}
+        app._chat_system = MagicMock()
+        app._chat_system.player_changes = []
+
+        with patch.object(app, "_run_analysis"):
+            app._on_detection("VICTORY")
+
+        app._chat_system.reset_match.assert_called_once()
+
     def test_reset_match_called_on_manual_submit(self, app):
         app._analyzing = False
         app._detector = MagicMock()
@@ -164,6 +177,19 @@ class TestAnalysisFlow:
             app._on_submit_tab("DEFEAT")
 
         app._detector.reset_match.assert_called_once()
+
+    def test_chat_system_reset_on_manual_submit(self, app):
+        app._analyzing = False
+        app._detector = MagicMock()
+        app._detector.hero_map = {}
+        app._detector.hero_history = {}
+        app._chat_system = MagicMock()
+        app._chat_system.player_changes = []
+
+        with patch.object(app, "_run_analysis"):
+            app._on_submit_tab("DEFEAT")
+
+        app._chat_system.reset_match.assert_called_once()
 
     def test_final_hero_removed_from_crops(self):
         """The hero visible in the final screenshot should be removed from crops."""

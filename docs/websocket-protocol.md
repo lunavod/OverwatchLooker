@@ -120,6 +120,27 @@ This fires for the initial hero assignment too, not just mid-match swaps.
 
 ---
 
+### `player_change`
+
+Chat OCR detected a player joining or leaving the game.
+
+```json
+{
+  "type": "player_change",
+  "player": "TERYASCOTCH",
+  "event": "left",
+  "time": 245.0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `player` | `string` | Player name (UPPERCASE) |
+| `event` | `string` | `"joined"` or `"left"` |
+| `time` | `number` | Sim time (seconds) when the event was detected |
+
+---
+
 ### `detection`
 
 VICTORY or DEFEAT was detected from subtitle OCR. This fires immediately when the text is recognized, before any analysis delay.
@@ -289,6 +310,7 @@ hero_switch  → initial hero assignments as subtitles appear
 tab_capture  → player presses Tab
 hero_crop    → hero panel detected in Tab screenshot
 hero_switch  → mid-match hero swaps
+player_change → player leaves/joins mid-match
 tab_capture  → another Tab press
 detection    → VICTORY/DEFEAT recognized
 analyzing    → LLM analysis begins

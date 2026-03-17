@@ -190,6 +190,41 @@ class TestMergeHeroes:
         assert p["heroes"][0]["hero_name"] == "Moira"
         assert p["heroes"][0]["started_at"] == []
 
+    def test_player_changes_stored(self):
+        """player_changes should be stored at top level with relative timestamps."""
+        history = {"PLAYER1": [(100.0, "Reinhardt")]}
+        changes = [(250.0, "PLAYER2", "left"), (260.0, "PLAYER3", "joined")]
+        data = self._make_data()
+        merge_heroes(data, hero_history=history, player_changes=changes)
+        assert "player_changes" in data
+        assert len(data["player_changes"]) == 2
+        assert data["player_changes"][0] == {"time": 150, "player": "PLAYER2", "event": "left"}
+        assert data["player_changes"][1] == {"time": 160, "player": "PLAYER3", "event": "joined"}
+
+    def test_joined_at_set_on_player(self):
+        """Players with a 'joined' event should get joined_at set."""
+        history = {"PLAYER1": [(100.0, "Reinhardt")]}
+        changes = [(260.0, "PLAYER2", "joined")]
+        data = self._make_data()
+        merge_heroes(data, hero_history=history, player_changes=changes)
+        p2 = next(p for p in data["players"] if p["player_name"] == "PLAYER2")
+        assert p2["joined_at"] == 160
+
+    def test_no_joined_at_for_left(self):
+        """Players who left should NOT get joined_at set."""
+        history = {"PLAYER1": [(100.0, "Reinhardt")]}
+        changes = [(250.0, "PLAYER1", "left")]
+        data = self._make_data()
+        merge_heroes(data, hero_history=history, player_changes=changes)
+        p1 = next(p for p in data["players"] if p["player_name"] == "PLAYER1")
+        assert "joined_at" not in p1
+
+    def test_no_player_changes_no_field(self):
+        """Without player_changes, no player_changes key should exist."""
+        data = self._make_data()
+        merge_heroes(data)
+        assert "player_changes" not in data
+
     def test_non_self_player_gets_history(self):
         """Non-self players should also get heroes from hero_history."""
         history = {"PLAYER2": [(100.0, "Genji"), (200.0, "Tracer")]}
@@ -295,6 +330,22 @@ class TestFormatMatch:
         data = self._make_formatted_data()
         text = format_match(data, hero_history=history)
         assert "[Reinhardt > Juno > Moira]" in text
+
+    def test_player_changes_section(self):
+        data = self._make_formatted_data()
+        data["player_changes"] = [
+            {"time": 245, "player": "TERYASCOTCH", "event": "left"},
+            {"time": 251, "player": "MIABUNNI", "event": "joined"},
+        ]
+        text = format_match(data)
+        assert "PLAYER CHANGES:" in text
+        assert "TERYASCOTCH left (4:05)" in text
+        assert "MIABUNNI joined (4:11)" in text
+
+    def test_no_player_changes_section_when_empty(self):
+        data = self._make_formatted_data()
+        text = format_match(data)
+        assert "PLAYER CHANGES:" not in text
 
     def test_null_stats_formatted_as_dash(self):
         data = self._make_formatted_data()

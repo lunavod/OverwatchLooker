@@ -13,7 +13,7 @@ from overwatchlooker.display import print_analysis, print_error, print_status
 
 if TYPE_CHECKING:
     from overwatchlooker.recording.recorder import Recorder
-    from overwatchlooker.tick import SubtitleSystem, TickLoop
+    from overwatchlooker.tick import ChatSystem, SubtitleSystem, TickLoop
     from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
@@ -62,6 +62,7 @@ class App:
         self._recorder: Recorder | None = None
         self._tick_loop: TickLoop | None = None
         self._subtitle_system: SubtitleSystem | None = None
+        self._chat_system: ChatSystem | None = None
         self._bus = event_bus
         self._icon: pystray.Icon | None = None
         self._cooldown_until_tick: int = 0  # ignore tab/crop events until this tick
@@ -129,6 +130,11 @@ class App:
         self._ws_emit({"type": "hero_switch", "player": player,
                        "hero": hero, "time": sim_time})
 
+    def _on_player_change(self, player: str, event: str, sim_time: float) -> None:
+        """Callback when a player joins or leaves the game."""
+        self._ws_emit({"type": "player_change", "player": player,
+                       "event": event, "time": sim_time})
+
     def _on_detected(self, result: str, detection_time: float = 0.0) -> None:
         """Immediate callback when VICTORY/DEFEAT is first detected."""
         if self._recorder:
@@ -166,14 +172,20 @@ class App:
             hero_history = self._detector.hero_history
             self._detector.reset_match()
 
+        player_changes: list[tuple[float, str, str]] = []
+        if self._chat_system is not None:
+            player_changes = self._chat_system.player_changes
+            self._chat_system.reset_match()
+
         thread = threading.Thread(target=self._run_analysis,
-                                  args=(result, detection_time, hero_map, hero_history, hero_crops), daemon=True)
+                                  args=(result, detection_time, hero_map, hero_history, hero_crops, player_changes), daemon=True)
         thread.start()
 
     def _run_analysis(self, detection_result: str, detection_time: float = 0.0,
                       hero_map: dict[str, str] | None = None,
                       hero_history: dict[str, list[tuple[float, str]]] | None = None,
-                      hero_crops: dict[str, bytes] | None = None) -> None:
+                      hero_crops: dict[str, bytes] | None = None,
+                      player_changes: list[tuple[float, str, str]] | None = None) -> None:
         """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
         try:
             print_status(f"Analyzing {detection_result}...")
@@ -230,7 +242,8 @@ class App:
                     result["result"] = detection_result
                 # Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes[]
                 from overwatchlooker.analyzers.common import merge_heroes, format_match
-                merge_heroes(result, hero_map=hero_map, hero_history=hero_history)
+                merge_heroes(result, hero_map=hero_map, hero_history=hero_history,
+                             player_changes=player_changes)
                 display_text = format_match(result, hero_map=hero_map,
                                             hero_history=hero_history)
 
@@ -291,8 +304,8 @@ class App:
             print_status("Telegram: OFF")
 
         from overwatchlooker.tick import (
-            LiveFrameSource, LiveInputSource, ReplayFrameSource, ReplayInputSource,
-            SubtitleSystem, TabCaptureSystem, TickLoop,
+            ChatSystem, LiveFrameSource, LiveInputSource, ReplayFrameSource,
+            ReplayInputSource, SubtitleSystem, TabCaptureSystem, TickLoop,
         )
         from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
 
@@ -323,6 +336,10 @@ class App:
         self._detector = subtitle_system
         self._subtitle_system = subtitle_system
 
+        chat_system = ChatSystem(on_player_change=self._on_player_change)
+        self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
+        self._chat_system = chat_system
+
         if not self._replay_source:
             # Live mode: run tick loop in daemon thread
             tick_thread = threading.Thread(target=self._tick_loop.run, daemon=True)
@@ -341,6 +358,7 @@ class App:
         if hasattr(self, '_subtitle_system') and self._subtitle_system:
             self._subtitle_system.close()
             self._subtitle_system = None
+        self._chat_system = None
         if self._detector and hasattr(self._detector, 'stop'):
             self._detector.stop()
         self._detector = None
@@ -369,9 +387,14 @@ class App:
             hero_history = self._detector.hero_history
             self._detector.reset_match()
 
+        player_changes: list[tuple[float, str, str]] = []
+        if self._chat_system is not None:
+            player_changes = self._chat_system.player_changes
+            self._chat_system.reset_match()
+
         detection_time = self._tick_loop._current_tick / self._tick_loop.fps if self._tick_loop else 0.0
         thread = threading.Thread(target=self._run_analysis,
-                                  args=(result, detection_time, hero_map, hero_history, hero_crops), daemon=True)
+                                  args=(result, detection_time, hero_map, hero_history, hero_crops, player_changes), daemon=True)
         thread.start()
 
     def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
