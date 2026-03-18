@@ -191,6 +191,26 @@ class TestAnalysisFlow:
 
         app._chat_system.reset_match.assert_called_once()
 
+    def test_recording_start_emits_ws_state(self, app):
+        app._bus = MagicMock()
+        app._tick_loop = MagicMock()
+        app._tick_loop.frame_source = MagicMock(spec=[])  # no _camera attr
+        with patch("overwatchlooker.tray.show_notification"), \
+             patch("overwatchlooker.recording.recorder.Recorder") as MockRec:
+            MockRec.return_value.start.return_value = "recordings/test"
+            app._on_toggle_recording(None, None)
+        app._bus.emit.assert_called_with({"type": "state", "recording": True})
+
+    def test_recording_stop_emits_ws_state(self, app):
+        app._bus = MagicMock()
+        app._tick_loop = MagicMock()
+        app._recorder = MagicMock()
+        app._recorder.is_recording = True
+        app._recorder.stop.return_value = "recordings/test"
+        with patch("overwatchlooker.tray.show_notification"):
+            app._on_toggle_recording(None, None)
+        app._bus.emit.assert_called_with({"type": "state", "recording": False})
+
     def test_final_hero_removed_from_crops(self):
         """The hero visible in the final screenshot should be removed from crops."""
         from overwatchlooker.heroes import edit_distance

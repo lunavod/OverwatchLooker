@@ -1,5 +1,6 @@
 import argparse
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -99,6 +100,7 @@ def main():
         ws_server = WsServer(event_bus, port=WS_PORT)
         ws_server.start()
 
+    print_status(f"PID: {os.getpid()}")
     features = [f"analyzer={analyzer}"]
     if args.tg:
         features.append("telegram")

@@ -27,6 +27,7 @@ dependencies = [
     "zstandard>=0.25.0",
     "pytesseract-api>=1.0.4",
     "websockets>=16.0",
+    "memoir-capture>=0.1.0",
 ]
 
 [tool.pytest.ini_options]

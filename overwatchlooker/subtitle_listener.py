@@ -12,7 +12,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from pytesseract_api import image_to_string as _tess_image_to_string, TessPageSegMode
+from pytesseract_api.api import get_image_data, get_tess_lib
+from pytesseract_api.capi_types import TessPageSegMode
 
 from overwatchlooker.hotkey import _get_foreground_exe
 from overwatchlooker.config import (
@@ -30,17 +31,38 @@ _TESS_DATA = r"C:\Program Files\Tesseract-OCR\tessdata"
 # Open /dev/null once for stderr suppression
 _devnull_fd = os.open(os.devnull, os.O_WRONLY)
 
+# Per-thread Tesseract API handles — each TessBaseAPI instance is independent
+# so multiple threads can OCR in parallel without locking.
+_tess_local = threading.local()
+_tess_lib = get_tess_lib(_TESS_LIB)
+
+
+def _get_thread_api():
+    """Get or create a Tesseract API handle for the current thread."""
+    api = getattr(_tess_local, "api", None)
+    if api is None:
+        api = _tess_lib.TessBaseAPICreate()
+        _tess_lib.TessBaseAPIInit3(api, _TESS_DATA.encode(), b"eng")
+        _tess_local.api = api
+    return api
+
 
 def _ocr(binary: np.ndarray) -> str:
-    """Run Tesseract on a binary image via C API. Returns lowercase text."""
-    # Suppress Tesseract's noisy C-level stderr warnings
+    """Run Tesseract on a binary image via C API. Returns lowercase text.
+
+    Thread-safe: each thread gets its own TessBaseAPI instance.
+    """
+    binary = binary.copy()
+    data = get_image_data(binary)
+    api = _get_thread_api()
+
     old_stderr = os.dup(2)
     os.dup2(_devnull_fd, 2)
     try:
-        return _tess_image_to_string(
-            binary, psm=TessPageSegMode.PSM_SINGLE_BLOCK,
-            lib_path=_TESS_LIB, tessdata_path=_TESS_DATA,
-        ).strip().lower()
+        _tess_lib.TessBaseAPISetPageSegMode(api, TessPageSegMode.PSM_SINGLE_BLOCK.value)
+        _tess_lib.TessBaseAPISetImage(api, *data)
+        res: bytes = _tess_lib.TessBaseAPIGetUTF8Text(api)
+        return res.decode().strip().lower()
     finally:
         os.dup2(old_stderr, 2)
         os.close(old_stderr)

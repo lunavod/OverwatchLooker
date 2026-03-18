@@ -80,6 +80,7 @@ class App:
 
     def _ws_quit(self) -> None:
         """Handle quit command from companion app."""
+        _logger.info("Quit requested via WebSocket command")
         self._shutdown()
 
     def _in_post_detection_cooldown(self) -> bool:
@@ -414,6 +415,7 @@ class App:
                 self._recorder = None
                 print_status(f"Recording saved to {output}")
                 show_notification("OverwatchLooker", "Recording saved.")
+                self._ws_emit({"type": "state", "recording": False})
             except Exception as e:
                 print_error(f"Failed to stop recording: {e}")
         else:
@@ -435,6 +437,7 @@ class App:
                     self._tick_loop.on_key_events = self._recorder.log_key_events
                 print_status(f"Recording to {output}")
                 show_notification("OverwatchLooker", "Recording started.")
+                self._ws_emit({"type": "state", "recording": True})
             except Exception as e:
                 print_error(f"Failed to start recording: {e}")
                 self._recorder = None
@@ -515,6 +518,11 @@ class App:
             while tray_thread.is_alive():
                 tray_thread.join(timeout=0.5)
         except KeyboardInterrupt:
+            _logger.info("KeyboardInterrupt received")
+            self._shutdown()
+
+        if not tray_thread.is_alive():
+            _logger.warning("Tray icon thread exited unexpectedly")
             self._shutdown()
 
     def _shutdown(self) -> None:
