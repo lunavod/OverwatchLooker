@@ -22,12 +22,9 @@ dependencies = [
     "litellm>=1.81.14",
     "telethon>=1.37.0",
     "questionary>=2.1.1",
-    "dxcam>=0.3.0",
-    "lz4>=4.4.5",
-    "zstandard>=0.25.0",
     "pytesseract-api>=1.0.4",
     "websockets>=16.0",
-    "memoir-capture>=0.1.0",
+    "memoir-capture>=0.1.2",
 ]
 
 [tool.pytest.ini_options]

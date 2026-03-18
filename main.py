@@ -1,6 +1,5 @@
 import argparse
 import io
-import os
 import sys
 from pathlib import Path
 
@@ -54,12 +53,7 @@ def main():
         "--replay",
         type=str,
         default=None,
-        help="Replay a recording directory instead of live capture",
-    )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="Skip decompressing frames to disk cache (slower replay)",
+        help="Replay a recording directory or .mp4 file",
     )
     parser.add_argument(
         "--no-analysis",
@@ -100,7 +94,6 @@ def main():
         ws_server = WsServer(event_bus, port=WS_PORT)
         ws_server.start()
 
-    print_status(f"PID: {os.getpid()}")
     features = [f"analyzer={analyzer}"]
     if args.tg:
         features.append("telegram")
@@ -168,13 +161,13 @@ def main():
     elif args.replay:
         from overwatchlooker.recording.replay import ReplaySource
 
-        replay_dir = Path(args.replay)
-        if not replay_dir.is_dir():
-            print_error(f"Recording directory not found: {replay_dir}")
+        source = Path(args.replay)
+        if not source.exists():
+            print_error(f"Recording not found: {source}")
             sys.exit(1)
 
-        replay = ReplaySource(replay_dir, no_cache=args.no_cache)
-        print_status(f"Replaying {replay_dir.name} ({replay.duration:.0f}s, "
+        replay = ReplaySource(source)
+        print_status(f"Replaying {source.name} ({replay.duration:.0f}s, "
                      f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
 
         app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,

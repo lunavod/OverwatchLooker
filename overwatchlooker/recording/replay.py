@@ -1,211 +1,125 @@
-"""Replay a recorded session, feeding frames and events to the app pipeline."""
+"""Replay a recorded session from MP4 video + .meta keyboard data."""
 
 from __future__ import annotations
 
-import json
 import logging
-import struct
-from io import BufferedReader
 from pathlib import Path
 
+import cv2
 import numpy as np
-import zstandard as zstd
+
+from memoir_capture import MetaReader, MetaFile
 
 _logger = logging.getLogger("overwatchlooker")
 
 
-def _ensure_raw_frames(recording_dir: Path, meta: dict) -> Path:
-    """Decompress frames.bin → frames.raw if not already done. Returns path to raw file."""
-    raw_path = recording_dir / "frames.raw"
-    frames_path = recording_dir / "frames.bin"
-
-    if raw_path.exists():
-        frame_size = meta["resolution"][0] * meta["resolution"][1] * 3
-        actual_size = raw_path.stat().st_size
-        if actual_size == 0 or actual_size % frame_size != 0:
-            raise RuntimeError(
-                f"frames.raw corrupt: size={actual_size} not a multiple of frame_size={frame_size}. "
-                f"Delete frames.raw manually to regenerate."
-            )
-        actual_frames = actual_size // frame_size
-        if actual_frames != meta["frame_count"]:
-            _logger.warning(
-                f"frames.raw has {actual_frames} frames, meta says {meta['frame_count']}. "
-                f"Using actual count."
-            )
-            meta["frame_count"] = actual_frames
-        return raw_path
-
-    if not frames_path.exists():
-        raise FileNotFoundError(f"No frames.bin in {recording_dir}")
-
-    w, h = meta["resolution"]
-    frame_bytes = h * w * 3
-    frame_count = meta["frame_count"]
-    print(f"Decompressing {frame_count} frames to frames.raw...")
-
-    decompressor = zstd.ZstdDecompressor()
-    with open(frames_path, "rb") as src, open(raw_path, "wb") as dst:
-        for i in range(frame_count):
-            header = src.read(4)
-            if len(header) < 4:
-                break
-            length = struct.unpack("<I", header)[0]
-            compressed = src.read(length)
-            if len(compressed) < length:
-                break
-            raw = decompressor.decompress(compressed)
-            dst.write(raw)
-
-    actual_frames = raw_path.stat().st_size // frame_bytes
-    if actual_frames != frame_count:
-        _logger.warning(f"Decompressed {actual_frames} frames (meta says {frame_count}), using actual count")
-        meta["frame_count"] = actual_frames
-    _logger.info(f"Decompressed to {raw_path} ({raw_path.stat().st_size / 1024 / 1024:.0f} MB)")
-    return raw_path
-
 
 class FrameReader:
-    """Reads frames sequentially from raw or zstd-compressed frames."""
+    """Reads frames sequentially from an MP4 via cv2.VideoCapture."""
 
-    def __init__(self, recording_dir: Path, meta: dict, no_cache: bool = False):
-        self._resolution = tuple(meta["resolution"])
-        w, h = self._resolution
-        self._frame_shape = (h, w, 3)
-        self._frame_count = meta["frame_count"]
-        self._fps = meta["fps"]
+    def __init__(self, video_path: Path):
+        self._cap = cv2.VideoCapture(str(video_path))
+        if not self._cap.isOpened():
+            raise FileNotFoundError(f"Cannot open video: {video_path}")
+        self._frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self._read = 0
-        self._frame_bytes = h * w * 3
-
-        raw_path = recording_dir / "frames.raw"
-        frames_path = recording_dir / "frames.bin"
-
-        self._raw_file: BufferedReader | None = None
-        self._file: BufferedReader | None = None
-        self._decompressor: zstd.ZstdDecompressor | None = None
-
-        # Priority: raw file > zstd (decompress to raw first)
-        if raw_path.exists():
-            self._validate_raw(raw_path, meta)
-            self._mode = "raw"
-            self._raw_file = open(raw_path, "rb")
-            self._frame_count = meta["frame_count"]
-        elif frames_path.exists() and not no_cache:
-            _ensure_raw_frames(recording_dir, meta)
-            self._mode = "raw"
-            self._raw_file = open(raw_path, "rb")
-            self._frame_count = meta["frame_count"]
-        elif frames_path.exists():
-            self._mode = "zstd"
-            self._file = open(frames_path, "rb")
-            self._decompressor = zstd.ZstdDecompressor()
-        else:
-            raise FileNotFoundError(
-                f"No frames.bin in {recording_dir}"
-            )
-
-        _logger.info(f"Frame reader: {self._mode} format")
-
-    def _validate_raw(self, raw_path: Path, meta: dict) -> None:
-        """Validate frames.raw and adjust meta frame_count if needed."""
-        frame_size = meta["resolution"][0] * meta["resolution"][1] * 3
-        actual_size = raw_path.stat().st_size
-        if actual_size == 0 or actual_size % frame_size != 0:
-            raise RuntimeError(
-                f"frames.raw corrupt: size={actual_size} not a multiple of frame_size={frame_size}. "
-                f"Delete frames.raw manually to regenerate."
-            )
-        actual_frames = actual_size // frame_size
-        if actual_frames != meta["frame_count"]:
-            _logger.warning(
-                f"frames.raw has {actual_frames} frames, meta says {meta['frame_count']}. "
-                f"Using actual count."
-            )
-            meta["frame_count"] = actual_frames
 
     @property
     def frame_count(self) -> int:
         return self._frame_count
 
     def read_next(self) -> np.ndarray | None:
-        """Read next frame sequentially. Returns None when exhausted."""
+        """Read next frame sequentially. Returns BGR ndarray or None when exhausted."""
         if self._read >= self._frame_count:
             return None
-
-        if self._mode == "raw":
-            frame = self._read_raw()
-        else:
-            frame = self._read_zstd()
-
+        ok, frame = self._cap.read()
+        if not ok or frame is None:
+            return None
         self._read += 1
         return frame
 
-    def _read_raw(self) -> np.ndarray | None:
-        assert self._raw_file is not None
-        data = self._raw_file.read(self._frame_bytes)
-        if len(data) < self._frame_bytes:
-            return None
-        return np.frombuffer(data, dtype=np.uint8).reshape(self._frame_shape)
-
-    def _read_zstd(self) -> np.ndarray | None:
-        assert self._file is not None
-        assert self._decompressor is not None
-        header = self._file.read(4)
-        if len(header) < 4:
-            return None
-        length = struct.unpack("<I", header)[0]
-        compressed = self._file.read(length)
-        if len(compressed) < length:
-            return None
-        raw = self._decompressor.decompress(compressed)
-        return np.frombuffer(raw, dtype=np.uint8).reshape(self._frame_shape)
-
     def close(self) -> None:
-        if self._raw_file:
-            self._raw_file.close()
-            self._raw_file = None
-        if self._file:
-            self._file.close()
-            self._file = None
+        self._cap.release()
+
+
+def _synthesize_events(meta: MetaFile) -> list[dict]:
+    """Convert keyboard_mask diffs between consecutive meta rows into key events."""
+    # Build bit → app name mapping from meta key table
+    bit_to_name: dict[int, str] = {}
+    for key_entry in meta.keys:
+        bit_to_name[key_entry.bit_index] = key_entry.name
+
+    events: list[dict] = []
+    prev_mask = 0
+    for row in meta.rows:
+        mask = row.keyboard_mask
+        changed = mask ^ prev_mask
+        if changed:
+            for bit, name in bit_to_name.items():
+                bit_val = 1 << bit
+                if changed & bit_val:
+                    if mask & bit_val:
+                        events.append({"frame": row.record_frame_index,
+                                       "type": "key_down", "key": name})
+                    else:
+                        events.append({"frame": row.record_frame_index,
+                                       "type": "key_up", "key": name})
+        prev_mask = mask
+
+    events.sort(key=lambda e: e["frame"])
+    return events
 
 
 class ReplaySource:
-    """Loads a recording and provides frame access + event scheduling."""
+    """Loads an MP4 recording + .meta and provides frame access + event scheduling."""
 
-    def __init__(self, recording_dir: Path, no_cache: bool = False):
-        self._dir = recording_dir
+    def __init__(self, source: Path | str):
+        """
+        Args:
+            source: Path to a recording directory (containing recording.mp4 + recording.meta),
+                    or a direct .mp4 file path.
+        """
+        source = Path(source)
 
-        # Load meta
-        meta_path = recording_dir / "meta.json"
-        if not meta_path.exists():
-            raise FileNotFoundError(f"No meta.json in {recording_dir}")
-        self._meta = json.loads(meta_path.read_text("utf-8"))
-        self._fps = self._meta["fps"]
-        self._frame_count = self._meta["frame_count"]
-        self._resolution = tuple(self._meta["resolution"])
-        self._duration = self._meta["duration_seconds"]
+        if source.is_dir():
+            video_path = source / "recording.mp4"
+            meta_path = source / "recording.meta"
+        elif source.suffix == ".mp4":
+            video_path = source
+            meta_path = source.with_suffix(".meta")
+        else:
+            raise FileNotFoundError(f"Cannot determine recording format from: {source}")
 
-        # Frame reader (handles both zstd and video formats)
-        self._reader = FrameReader(recording_dir, self._meta, no_cache=no_cache)
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video not found: {video_path}")
 
-        # Load events
-        events_path = recording_dir / "events.jsonl"
-        self._events = []
-        if events_path.exists():
-            for line in events_path.read_text("utf-8").splitlines():
-                line = line.strip()
-                if line:
-                    self._events.append(json.loads(line))
-            self._events.sort(key=lambda e: e.get("frame", 0))
+        # Open video to get properties
+        self._reader = FrameReader(video_path)
+
+        cap = cv2.VideoCapture(str(video_path))
+        self._fps = int(cap.get(cv2.CAP_PROP_FPS)) or 10
+        self._frame_count = self._reader.frame_count
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self._resolution = (w, h)
+        self._duration = self._frame_count / self._fps if self._fps else 0.0
+        cap.release()
+
+        # Load .meta if available
+        self._meta: MetaFile | None = None
+        self._events: list[dict] = []
+        if meta_path.exists():
+            self._meta = MetaReader.read(meta_path)
+            self._events = _synthesize_events(self._meta)
+            _logger.info(f"Loaded .meta: {len(self._meta.rows)} rows, "
+                         f"{len(self._events)} synthetic key events")
+        else:
+            _logger.warning(f"No .meta file found at {meta_path}, replay without keyboard data")
 
         _logger.info(
             f"Replay loaded: {self._frame_count} frames, {self._duration:.1f}s, "
             f"{self._resolution[0]}x{self._resolution[1]}"
         )
-
-    @property
-    def meta(self) -> dict:
-        return dict(self._meta)
 
     @property
     def duration(self) -> float:

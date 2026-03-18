@@ -2,7 +2,7 @@
 
 Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero switches, player joins/leaves), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
 
-Two analyzer backends: **ChatGPT/Codex** (cloud, default) or **Claude Vision** (cloud). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Player joins/leaves are tracked via **chat OCR**. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
+Two analyzer backends: **ChatGPT/Codex** (cloud, default) or **Claude Vision** (cloud). Screen capture uses **memoir-capture** (Windows Graphics Capture + NVENC H.265). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Player joins/leaves are tracked via **chat OCR**. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
 
 ## Setup
 
@@ -46,7 +46,7 @@ uv run python main.py --transcript  # log subtitle OCR to transcripts/
 
 Starts a system tray application with a tick-based frame loop:
 
-1. **Hold Tab** in-game to open the scoreboard — a screenshot is captured automatically via dxcam
+1. **Hold Tab** in-game to open the scoreboard — a screenshot is captured automatically via memoir-capture (Windows Graphics Capture)
 2. **Hero switches are tracked** in real time via subtitle OCR (Tesseract)
 3. **Victory/defeat is detected automatically** via subtitle OCR
 4. Analysis runs, result is **copied to clipboard** (or sent to Telegram with `--tg`)
@@ -76,11 +76,11 @@ Analyzes a saved screenshot directly. Results are cached on disk (`cache/`) and 
 
 ```bash
 uv run python main.py --replay recordings/2026-03-07_21-00-39
+uv run python main.py --replay recordings/2026-03-07_21-00-39/recording.mp4  # direct .mp4 path
 uv run python main.py --replay recordings/2026-03-07_21-00-39 --no-analysis  # skip LLM
-uv run python main.py --replay recordings/2026-03-07_21-00-39 --no-cache     # don't cache decompressed frames
 ```
 
-Replays a previously recorded session at max speed, running the full detection and analysis pipeline as if it were live. Useful for testing and debugging.
+Replays a previously recorded session at max speed, running the full detection and analysis pipeline as if it were live. Accepts a recording directory or a direct `.mp4` file path. Useful for testing and debugging.
 
 ### CLI flags
 
@@ -92,8 +92,7 @@ Replays a previously recorded session at max speed, running the full detection a
 | `--clean` | Bypass disk cache and re-analyze from scratch |
 | `--backfill` | Mark match as backfilled when uploading to MCP |
 | `--transcript` | Log subtitle OCR results to `transcripts/` folder |
-| `--replay` | Replay a recording directory instead of live capture |
-| `--no-cache` | Skip decompressing frames to disk cache (slower replay) |
+| `--replay` | Replay a recording directory or `.mp4` file |
 | `--no-analysis` | Skip LLM analysis on detection (useful for testing replays) |
 | `--win` | Hint that the match result is VICTORY |
 | `--loss` | Hint that the match result is DEFEAT |
@@ -173,9 +172,9 @@ Sends the screenshot to Claude with a structured JSON schema prompt. Same featur
 
 The app can record gameplay sessions for later replay and analysis.
 
-**Recording:** Toggle via the tray menu. Records screen frames at 10 FPS with zstd compression, downscaled to 1080p. Keyboard events are logged with frame numbers for deterministic replay. Recordings are saved to `recordings/` with timestamped directories.
+**Recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Produces `recording.mp4` + `recording.meta` in timestamped directories under `recordings/`.
 
-**Replay:** Use `--replay <dir>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
+**Replay:** Use `--replay <dir>` or `--replay <file.mp4>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 
 ## MCP integration
 
@@ -218,7 +217,7 @@ overwatchlooker/
   tick.py                        # Tick-based frame loop (live + replay)
   tray.py                        # System tray app, analysis orchestration
   hotkey.py                      # Tab key listener (pynput, Windows foreground check)
-  screenshot.py                  # Screen capture (dxcam), OW2 Tab validation, Tesseract OCR
+  screenshot.py                  # OW2 Tab screen validation, Tesseract OCR, screenshot saving
   subtitle_listener.py           # Subtitle-based detection + hero switch tracking
   chat_listener.py               # Chat OCR for player join/leave detection
   heroes.py                      # Hero name fuzzy matching (Levenshtein)
@@ -230,9 +229,7 @@ overwatchlooker/
     codex.py                     # ChatGPT/Codex backend
     common.py                    # Shared schema, formatting, hero merging
   recording/
-    recorder.py                  # zstd-compressed frame + keyboard recording
-    replay.py                    # Frame decompression + event replay
-    export_mp4.py                # Convert recordings to MP4 video
+    replay.py                    # MP4 + .meta replay with keyboard event synthesis
   cache.py                       # SHA256-based disk cache for analysis results
   display.py                     # Formatting, logging, safe stdout for pythonw
   notification.py                # Clipboard, tkinter overlay, audio chime

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import traceback
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pystray  # type: ignore[import-untyped]
@@ -12,7 +15,7 @@ from overwatchlooker.config import ANALYZER, SCREENSHOT_MAX_AGE_SECONDS
 from overwatchlooker.display import print_analysis, print_error, print_status
 
 if TYPE_CHECKING:
-    from overwatchlooker.recording.recorder import Recorder
+    from memoir_capture import CaptureEngine
     from overwatchlooker.tick import ChatSystem, SubtitleSystem, TickLoop
     from overwatchlooker.ws_server import EventBus
 
@@ -24,6 +27,9 @@ from overwatchlooker.screenshot import (  # noqa: E402
     ocr_hero_name,
 )
 from overwatchlooker.heroes import edit_distance as _edit_distance  # noqa: E402
+
+_RECORDINGS_DIR = Path(__file__).parent.parent / "recordings"
+
 
 
 def _create_icon_image() -> Image.Image:
@@ -42,6 +48,8 @@ def _create_icon_image() -> Image.Image:
 _AUDIO_ANALYSIS_DELAY = 5.0  # seconds to wait after audio trigger before analyzing
 _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 _POST_SUBMIT_COOLDOWN = 30.0  # seconds to ignore tab/crop events after detection
+_OW_POLL_INTERVAL = 2.0  # seconds between OW window checks
+_OW_STABILITY_TIME = 5.0  # seconds OW must be present before starting engine
 
 
 class App:
@@ -59,13 +67,16 @@ class App:
         self._use_transcript = use_transcript
         self._replay_source = replay_source  # ReplaySource for replay mode
         self._no_analysis = no_analysis
-        self._recorder: Recorder | None = None
+        self._engine: CaptureEngine | None = None
         self._tick_loop: TickLoop | None = None
         self._subtitle_system: SubtitleSystem | None = None
         self._chat_system: ChatSystem | None = None
         self._bus = event_bus
         self._icon: pystray.Icon | None = None
         self._cooldown_until_tick: int = 0  # ignore tab/crop events until this tick
+        self._poll_thread: threading.Thread | None = None
+        self._poll_stop = threading.Event()
+        self._recording = False
         if event_bus:
             self._register_commands(event_bus)
 
@@ -138,8 +149,6 @@ class App:
 
     def _on_detected(self, result: str, detection_time: float = 0.0) -> None:
         """Immediate callback when VICTORY/DEFEAT is first detected."""
-        if self._recorder:
-            self._recorder.log_event("detection", result=result)
         self._ws_emit({"type": "detection", "result": result, "time": detection_time})
         show_notification("OverwatchLooker", f"{result} detected! Analyzing...")
         if self._no_analysis:
@@ -283,43 +292,104 @@ class App:
             with self._lock:
                 self._analyzing = False
 
-    def _start_listening(self) -> None:
-        if self._active:
-            return
+    # ------------------------------------------------------------------
+    # Engine lifecycle: polling for Overwatch window
+    # ------------------------------------------------------------------
 
-        if ANALYZER == "anthropic":
-            from overwatchlooker.config import ANTHROPIC_API_KEY
-            if not ANTHROPIC_API_KEY:
-                print_error("ANALYZER=anthropic but ANTHROPIC_API_KEY is not set. "
-                            "Set it in .env or use a different analyzer.")
-                return
+    def _is_overwatch_running(self) -> bool:
+        """Check if any window belongs to overwatch.exe."""
+        import ctypes
+        import ctypes.wintypes
 
-        self._active = True
-        if self._use_telegram:
-            from overwatchlooker.config import TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_CHANNEL
-            if TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_CHANNEL:
-                print_status(f"Telegram: ON (chat_id={TELEGRAM_CHANNEL})")
+        # EnumWindows approach: check all top-level windows for overwatch.exe
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        found = [False]
+
+        @ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        def enum_callback(hwnd, lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+            if not handle:
+                return True
+            try:
+                buf = ctypes.create_unicode_buffer(260)
+                size = ctypes.wintypes.DWORD(260)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                    exe = buf.value.rsplit("\\", 1)[-1].lower()
+                    if exe == "overwatch.exe":
+                        found[0] = True
+                        return False  # stop enumeration
+            finally:
+                kernel32.CloseHandle(handle)
+            return True
+
+        user32.EnumWindows(enum_callback, 0)
+        return found[0]
+
+    def _poll_for_overwatch(self) -> None:
+        """Polling thread: waits for OW window, creates engine, starts tick loop."""
+        stable_since: float | None = None
+
+        while not self._poll_stop.is_set():
+            if self._engine is not None:
+                # Engine exists — monitor health
+                self._monitor_engine_health()
+                self._poll_stop.wait(_OW_POLL_INTERVAL)
+                continue
+
+            ow_present = self._is_overwatch_running()
+
+            if ow_present:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                    _logger.info("Overwatch window detected, waiting for stability...")
+                elif time.monotonic() - stable_since >= _OW_STABILITY_TIME:
+                    # Stable long enough — create engine and start
+                    try:
+                        self._create_engine_and_start()
+                        stable_since = None
+                    except Exception as e:
+                        _logger.error(f"Failed to create capture engine: {e}")
+                        stable_since = None
             else:
-                print_error("Telegram: --tg flag set but TELEGRAM_API_ID, TELEGRAM_API_HASH, or TELEGRAM_CHANNEL missing in .env")
-        else:
-            print_status("Telegram: OFF")
+                if stable_since is not None:
+                    _logger.info("Overwatch window disappeared during stability wait")
+                    stable_since = None
+
+            self._poll_stop.wait(_OW_POLL_INTERVAL)
+
+    def _create_engine_and_start(self) -> None:
+        """Create a memoir CaptureEngine targeting Overwatch and start the tick loop."""
+        from memoir_capture import CaptureEngine, MetaKeyEntry, WindowExeTarget
+
+        fps = 10
+        key_map = [
+            MetaKeyEntry(bit_index=0, virtual_key=0x09, name="tab"),
+            MetaKeyEntry(bit_index=1, virtual_key=0xA4, name="alt_l"),
+            MetaKeyEntry(bit_index=2, virtual_key=0xA5, name="alt_r"),
+        ]
+        self._engine = CaptureEngine(
+            WindowExeTarget("(?i)overwatch"),
+            max_fps=fps,
+            key_map=key_map,
+        )
+        self._engine.start()
 
         from overwatchlooker.tick import (
-            ChatSystem, LiveFrameSource, LiveInputSource, ReplayFrameSource,
-            ReplayInputSource, SubtitleSystem, TabCaptureSystem, TickLoop,
+            ChatSystem, MemoirFrameSource, MemoirInputSource,
+            SubtitleSystem, TabCaptureSystem, TickLoop,
         )
         from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
 
-        if self._replay_source:
-            fps = self._replay_source.fps
-            frame_source: ReplayFrameSource | LiveFrameSource = ReplayFrameSource(self._replay_source.reader)
-            input_source: ReplayInputSource | LiveInputSource = ReplayInputSource(self._replay_source.events)
-            detect_mode = "replay"
-        else:
-            fps = 10
-            frame_source = LiveFrameSource(fps)
-            input_source = LiveInputSource()
-            detect_mode = "subtitle"
+        frame_source = MemoirFrameSource(self._engine, fps)
+        input_source = MemoirInputSource(frame_source, [
+            {"bit_index": k.bit_index, "name": k.name} for k in key_map
+        ])
 
         self._tick_loop = TickLoop(fps, frame_source, input_source)
 
@@ -341,10 +411,109 @@ class App:
         self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
         self._chat_system = chat_system
 
-        if not self._replay_source:
-            # Live mode: run tick loop in daemon thread
-            tick_thread = threading.Thread(target=self._tick_loop.run, daemon=True)
-            tick_thread.start()
+        tick_thread = threading.Thread(target=self._tick_loop.run, daemon=True)
+        tick_thread.start()
+
+        print_status("Overwatch detected — capture engine started.")
+        self._ws_emit({"type": "state", "active": True, "analyzing": False})
+
+    def _monitor_engine_health(self) -> None:
+        """Check if the engine has faulted (e.g. OW closed)."""
+        if self._engine is None:
+            return
+        err = self._engine.get_last_error()
+        if err:
+            _logger.warning(f"Capture engine error: {err}")
+            self._tear_down_engine()
+            print_status("Overwatch closed. Waiting for reconnect...")
+            self._ws_emit({"type": "state", "active": True, "analyzing": False})
+            if self._recording:
+                self._recording = False
+                self._ws_emit({"type": "state", "recording": False})
+
+    def _tear_down_engine(self) -> None:
+        """Stop tick loop and engine, but keep polling alive."""
+        if self._tick_loop:
+            self._tick_loop.stop()
+            self._tick_loop = None
+        if hasattr(self, '_subtitle_system') and self._subtitle_system:
+            self._subtitle_system.close()
+            self._subtitle_system = None
+        self._chat_system = None
+        self._detector = None
+        if self._engine:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
+            self._engine = None
+
+    # ------------------------------------------------------------------
+    # Public lifecycle
+    # ------------------------------------------------------------------
+
+    def _start_listening(self) -> None:
+        if self._active:
+            return
+
+        if ANALYZER == "anthropic":
+            from overwatchlooker.config import ANTHROPIC_API_KEY
+            if not ANTHROPIC_API_KEY:
+                print_error("ANALYZER=anthropic but ANTHROPIC_API_KEY is not set. "
+                            "Set it in .env or use a different analyzer.")
+                return
+
+        self._active = True
+        if self._use_telegram:
+            from overwatchlooker.config import TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_CHANNEL
+            if TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_CHANNEL:
+                print_status(f"Telegram: ON (chat_id={TELEGRAM_CHANNEL})")
+            else:
+                print_error("Telegram: --tg flag set but TELEGRAM_API_ID, TELEGRAM_API_HASH, or TELEGRAM_CHANNEL missing in .env")
+        else:
+            print_status("Telegram: OFF")
+
+        if self._replay_source:
+            # Replay mode: use ReplayFrameSource/ReplayInputSource directly
+            from overwatchlooker.tick import (
+                ChatSystem, ReplayFrameSource, ReplayInputSource,
+                SubtitleSystem, TabCaptureSystem, TickLoop,
+            )
+            from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
+
+            fps = self._replay_source.fps
+            frame_source = ReplayFrameSource(self._replay_source.reader)
+            input_source = ReplayInputSource(self._replay_source.events)
+
+            self._tick_loop = TickLoop(fps, frame_source, input_source)
+
+            tab_system = TabCaptureSystem(self, fps=fps)
+            self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
+
+            subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+            detection_delay = int(fps * _AUDIO_ANALYSIS_DELAY)
+            subtitle_system = SubtitleSystem(on_match=self._on_detection,
+                                             on_detected=self._on_detected,
+                                             on_hero_switch=self._on_hero_switch,
+                                             transcript=self._use_transcript,
+                                             detection_delay_ticks=detection_delay)
+            self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
+            self._detector = subtitle_system
+            self._subtitle_system = subtitle_system
+
+            chat_system = ChatSystem(on_player_change=self._on_player_change)
+            self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
+            self._chat_system = chat_system
+
+            detect_mode = "replay"
+        else:
+            # Live mode: start polling thread for OW window
+            self._poll_stop.clear()
+            self._poll_thread = threading.Thread(
+                target=self._poll_for_overwatch, daemon=True
+            )
+            self._poll_thread.start()
+            detect_mode = "subtitle"
 
         print_status(f"Listening (analyzer={ANALYZER}, detection={detect_mode}). Tab=screenshot.")
         self._ws_emit({"type": "state", "active": True, "analyzing": False})
@@ -353,16 +522,21 @@ class App:
         if not self._active:
             return
         self._active = False
+
+        # Stop polling thread
+        self._poll_stop.set()
+        if self._poll_thread:
+            self._poll_thread.join(timeout=5.0)
+            self._poll_thread = None
+
+        # Stop engine and tick loop
+        self._tear_down_engine()
+
+        # Also stop tick loop if it was set up for replay
         if self._tick_loop:
             self._tick_loop.stop()
             self._tick_loop = None
-        if hasattr(self, '_subtitle_system') and self._subtitle_system:
-            self._subtitle_system.close()
-            self._subtitle_system = None
-        self._chat_system = None
-        if self._detector and hasattr(self._detector, 'stop'):
-            self._detector.stop()
-        self._detector = None
+
         print_status("Stopped listening.")
         self._ws_emit({"type": "state", "active": False})
 
@@ -405,54 +579,43 @@ class App:
         self._on_submit_tab("DEFEAT")
 
     def _on_toggle_recording(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
-        """Toggle screen recording on/off."""
-        if self._recorder and self._recorder.is_recording:
+        """Toggle recording on/off via the memoir engine."""
+        if self._engine is None:
+            print_error("No capture engine running. Start Overwatch first.")
+            return
+
+        if self._recording:
             try:
-                output = self._recorder.stop()
-                if self._tick_loop:
-                    self._tick_loop.on_frame = None
-                    self._tick_loop.on_key_events = None
-                self._recorder = None
-                print_status(f"Recording saved to {output}")
+                self._engine.stop_recording()
+                self._recording = False
+                print_status("Recording stopped.")
                 show_notification("OverwatchLooker", "Recording saved.")
                 self._ws_emit({"type": "state", "recording": False})
             except Exception as e:
                 print_error(f"Failed to stop recording: {e}")
         else:
             try:
-                from overwatchlooker.recording.recorder import Recorder
-                self._recorder = Recorder()
-                # Get resolution from the last captured frame or use a default
-                resolution = (3840, 2160)
-                if self._tick_loop and self._tick_loop.frame_source:
-                    src = self._tick_loop.frame_source
-                    if hasattr(src, '_camera') and src._camera:
-                        frame = src._camera.grab()
-                        if frame is not None:
-                            h, w = frame.shape[:2]
-                            resolution = (w, h)
-                output = self._recorder.start(resolution)
-                if self._tick_loop:
-                    self._tick_loop.on_frame = self._recorder.push_frame
-                    self._tick_loop.on_key_events = self._recorder.log_key_events
-                print_status(f"Recording to {output}")
+                _RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                rec_dir = _RECORDINGS_DIR / timestamp
+                rec_dir.mkdir()
+                base_path = rec_dir / "recording"
+                info = self._engine.start_recording(str(base_path))
+                self._recording = True
+                print_status(f"Recording to {info.video_path}")
                 show_notification("OverwatchLooker", "Recording started.")
                 self._ws_emit({"type": "state", "recording": True})
             except Exception as e:
                 print_error(f"Failed to start recording: {e}")
-                self._recorder = None
         self._rebuild_menu()
 
     def _on_quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
-        if self._recorder and self._recorder.is_recording:
+        if self._engine and self._recording:
             try:
-                if self._tick_loop:
-                    self._tick_loop.on_frame = None
-                    self._tick_loop.on_key_events = None
-                self._recorder.stop()
+                self._engine.stop_recording()
+                self._recording = False
             except Exception:
                 pass
-            self._recorder = None
         self._stop_listening()
         icon.stop()
 
@@ -473,7 +636,7 @@ class App:
         if self._icon is None:
             return
         label = "Stop Listening" if self._active else "Start Listening"
-        rec_label = "Stop Recording" if (self._recorder and self._recorder.is_recording) else "Start Recording"
+        rec_label = "Stop Recording" if self._recording else "Start Recording"
         self._icon.menu = pystray.Menu(
             pystray.MenuItem(label, self._on_toggle, default=True),
             pystray.MenuItem(rec_label, self._on_toggle_recording),
@@ -527,9 +690,10 @@ class App:
 
     def _shutdown(self) -> None:
         print_status("Shutting down...")
-        if self._recorder and self._recorder.is_recording:
+        if self._engine and self._recording:
             try:
-                self._recorder.stop()
+                self._engine.stop_recording()
+                self._recording = False
                 print_status("Recording saved on shutdown.")
             except Exception:
                 pass

@@ -1,12 +1,11 @@
 """Tick-based frame loop for both live and replay modes."""
 
-import datetime
 import logging
+import datetime
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
 from typing import Protocol
 
 import cv2
@@ -46,17 +45,15 @@ class TickContext:
 # Frame sources
 # ---------------------------------------------------------------------------
 
-class LiveFrameSource:
-    """Captures screen via dxcam, paces at real FPS."""
+class MemoirFrameSource:
+    """Captures frames via a memoir CaptureEngine, paces at real FPS."""
 
-    def __init__(self, fps: int):
-        import dxcam  # type: ignore[import-untyped]
-        self._camera = dxcam.create(output_color="BGR")
+    def __init__(self, engine, fps: int):
+        self._engine = engine
         self._fps = fps
         self._interval = 1.0 / fps
         self._last_time = 0.0
-        # Start continuous capture — dxcam buffers the latest frame
-        self._camera.start(target_fps=fps)
+        self._last_keyboard_mask: int = 0
 
     def next_frame(self) -> np.ndarray | None:
         # Pace at FPS
@@ -66,16 +63,18 @@ class LiveFrameSource:
             time.sleep(sleep_time)
         self._last_time = time.perf_counter()
 
-        # Only capture when Overwatch is foreground
-        from overwatchlooker.hotkey import _get_foreground_exe
-        if _get_foreground_exe() != "overwatch.exe":
+        packet = self._engine.get_next_frame(timeout_ms=200)
+        if packet is None:
             return None
 
         try:
-            frame = self._camera.get_latest_frame()
-        except Exception:
-            return None
-        return frame
+            self._last_keyboard_mask = packet.keyboard_mask
+            # cpu_bgra is (H, W, 4) — slice to BGR and copy before releasing
+            bgr = packet.cpu_bgra[:, :, :3].copy()
+        finally:
+            packet.release()
+
+        return bgr
 
 
 class ReplayFrameSource:
@@ -92,53 +91,39 @@ class ReplayFrameSource:
 # Input sources
 # ---------------------------------------------------------------------------
 
-class LiveInputSource:
-    """Wraps pynput, tracks key state per tick."""
+class MemoirInputSource:
+    """Reads keyboard state from memoir FramePacket keyboard_mask bitmasks."""
 
-    def __init__(self):
-        from pynput import keyboard
+    def __init__(self, frame_source: MemoirFrameSource, key_table: list[dict]):
+        """
+        Args:
+            frame_source: The MemoirFrameSource to read _last_keyboard_mask from.
+            key_table: List of {bit_index, name} dicts from the key map passed
+                       to the CaptureEngine. Names should match what the app
+                       expects (e.g. "tab", "alt_l", "alt_r").
+        """
+        self._frame_source = frame_source
+        self._bit_to_name: dict[int, str] = {
+            entry["bit_index"]: entry["name"] for entry in key_table
+        }
 
         self._held: set[str] = set()
         self._just_pressed: set[str] = set()
         self._just_released: set[str] = set()
-        self._pending_press: list[str] = []
-        self._pending_release: list[str] = []
-        self._lock = threading.Lock()
-
-        def _key_to_str(key) -> str:
-            if isinstance(key, keyboard.Key):
-                return key.name
-            if isinstance(key, keyboard.KeyCode):
-                if key.char:
-                    return key.char
-                if key.vk:
-                    return f"vk_{key.vk}"
-            return str(key)
-
-        def on_press(key):
-            name = _key_to_str(key)
-            with self._lock:
-                self._pending_press.append(name)
-
-        def on_release(key):
-            name = _key_to_str(key)
-            with self._lock:
-                self._pending_release.append(name)
-
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        self._listener.start()
+        self._prev_mask: int = 0
 
     def advance_to(self, tick: int) -> None:
-        with self._lock:
-            presses = self._pending_press
-            releases = self._pending_release
-            self._pending_press = []
-            self._pending_release = []
+        mask = self._frame_source._last_keyboard_mask
+        # Decode mask into current held set
+        current: set[str] = set()
+        for bit, name in self._bit_to_name.items():
+            if mask & (1 << bit):
+                current.add(name)
 
-        self._just_pressed = set(presses)
-        self._just_released = set(releases)
-        self._held.update(presses)
-        self._held -= set(releases)
+        self._just_pressed = current - self._held
+        self._just_released = self._held - current
+        self._held = current
+        self._prev_mask = mask
 
     def is_key_held(self, key: str) -> bool:
         return key in self._held
@@ -150,11 +135,11 @@ class LiveInputSource:
         return key in self._just_released
 
     def stop(self) -> None:
-        self._listener.stop()
+        pass
 
 
 class ReplayInputSource:
-    """Replays events from events.jsonl."""
+    """Replays keyboard events synthesized from .meta keyboard_mask diffs."""
 
     def __init__(self, events: list[dict]):
         self._events = [e for e in events if e.get("type") in ("key_down", "key_up")]
@@ -407,8 +392,6 @@ class TickLoop:
         self._threads: list[threading.Thread] = []
         self.running = True
         self._current_tick = 0
-        self.on_frame: Callable[[np.ndarray, int], None] | None = None  # optional callback(frame_bgr, tick)
-        self.on_key_events: Callable[[int, set[str], set[str]], None] | None = None  # optional callback(tick, pressed, released)
 
     def register(self, on_tick, every_n_ticks: int = 1) -> None:
         self._systems.append((every_n_ticks, on_tick))
@@ -443,14 +426,6 @@ class TickLoop:
                 sim_time = tick / self.fps
                 self.input_source.advance_to(tick)
 
-                if self.on_key_events:
-                    pressed = self.input_source._just_pressed
-                    released = self.input_source._just_released
-                    if pressed or released:
-                        self.on_key_events(tick, pressed, released)
-
-                if self.on_frame:
-                    self.on_frame(frame, tick)
                 self._current_tick = tick
                 ctx_holder[0] = TickContext(tick, sim_time, frame, self.input_source)
                 tick_holder[0] = tick
@@ -496,8 +471,3 @@ class TickLoop:
     def stop(self) -> None:
         self.running = False
         self.input_source.stop()
-        if isinstance(self.frame_source, LiveFrameSource):
-            try:
-                self.frame_source._camera.stop()
-            except Exception:
-                pass

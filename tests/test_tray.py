@@ -1,8 +1,10 @@
-"""Tests for tray App: hero crop lifecycle, analysis flow."""
+"""Tests for tray App: hero crop lifecycle, analysis flow, memoir input."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from memoir_capture import MetaFile, MetaHeader, MetaKeyEntry, MetaRow
 
 
 @pytest.fixture
@@ -193,23 +195,134 @@ class TestAnalysisFlow:
 
     def test_recording_start_emits_ws_state(self, app):
         app._bus = MagicMock()
-        app._tick_loop = MagicMock()
-        app._tick_loop.frame_source = MagicMock(spec=[])  # no _camera attr
+        mock_engine = MagicMock()
+        mock_engine.start_recording.return_value = MagicMock(video_path="recordings/test/recording.mp4")
+        app._engine = mock_engine
         with patch("overwatchlooker.tray.show_notification"), \
-             patch("overwatchlooker.recording.recorder.Recorder") as MockRec:
-            MockRec.return_value.start.return_value = "recordings/test"
+             patch("overwatchlooker.tray._RECORDINGS_DIR"):
             app._on_toggle_recording(None, None)
         app._bus.emit.assert_called_with({"type": "state", "recording": True})
 
     def test_recording_stop_emits_ws_state(self, app):
         app._bus = MagicMock()
-        app._tick_loop = MagicMock()
-        app._recorder = MagicMock()
-        app._recorder.is_recording = True
-        app._recorder.stop.return_value = "recordings/test"
+        mock_engine = MagicMock()
+        app._engine = mock_engine
+        app._recording = True
         with patch("overwatchlooker.tray.show_notification"):
             app._on_toggle_recording(None, None)
         app._bus.emit.assert_called_with({"type": "state", "recording": False})
+
+class TestMemoirInputSource:
+    """Tests for MemoirInputSource keyboard bitmask decoding."""
+
+    def _make_source(self, key_table=None):
+        from overwatchlooker.tick import MemoirInputSource
+        frame_source = MagicMock()
+        frame_source._last_keyboard_mask = 0
+        if key_table is None:
+            key_table = [
+                {"bit_index": 0, "name": "tab"},
+                {"bit_index": 1, "name": "alt_l"},
+                {"bit_index": 2, "name": "alt_r"},
+            ]
+        return MemoirInputSource(frame_source, key_table), frame_source
+
+    def test_no_keys_held_initially(self):
+        src, _ = self._make_source()
+        src.advance_to(0)
+        assert not src.is_key_held("tab")
+        assert not src.is_key_held("alt_l")
+
+    def test_tab_pressed(self):
+        src, fs = self._make_source()
+        fs._last_keyboard_mask = 0b001  # bit 0 = tab
+        src.advance_to(0)
+        assert src.is_key_held("tab")
+        assert src.key_just_pressed("tab")
+        assert not src.is_key_held("alt_l")
+
+    def test_tab_held_then_released(self):
+        src, fs = self._make_source()
+        fs._last_keyboard_mask = 0b001
+        src.advance_to(0)
+        assert src.is_key_held("tab")
+
+        fs._last_keyboard_mask = 0b000
+        src.advance_to(1)
+        assert not src.is_key_held("tab")
+        assert src.key_just_released("tab")
+        assert not src.key_just_pressed("tab")
+
+    def test_multiple_keys(self):
+        src, fs = self._make_source()
+        fs._last_keyboard_mask = 0b011  # tab + alt_l
+        src.advance_to(0)
+        assert src.is_key_held("tab")
+        assert src.is_key_held("alt_l")
+        assert not src.is_key_held("alt_r")
+
+    def test_held_key_not_re_pressed(self):
+        src, fs = self._make_source()
+        fs._last_keyboard_mask = 0b001
+        src.advance_to(0)
+        assert src.key_just_pressed("tab")
+
+        # Same mask next tick — held but not just pressed
+        src.advance_to(1)
+        assert src.is_key_held("tab")
+        assert not src.key_just_pressed("tab")
+
+
+class TestSynthesizeEvents:
+    """Tests for replay _synthesize_events from .meta keyboard masks."""
+
+    def _make_meta(self, keys, rows):
+        header = MetaHeader(magic=b"RCMETA1\x00", version=1,
+                            created_unix_ns=0, key_count=len(keys))
+        return MetaFile(header=header, keys=keys, rows=rows)
+
+    def _make_row(self, frame_index, mask):
+        return MetaRow(frame_id=frame_index, record_frame_index=frame_index,
+                       capture_qpc=0, host_accept_qpc=0, keyboard_mask=mask,
+                       width=1920, height=1080, analysis_stride=1)
+
+    def test_key_down_on_bit_set(self):
+        from overwatchlooker.recording.replay import _synthesize_events
+        keys = [MetaKeyEntry(bit_index=0, virtual_key=0x09, name="tab")]
+        rows = [self._make_row(0, 0b0), self._make_row(1, 0b1)]
+        events = _synthesize_events(self._make_meta(keys, rows))
+        assert len(events) == 1
+        assert events[0] == {"frame": 1, "type": "key_down", "key": "tab"}
+
+    def test_key_up_on_bit_clear(self):
+        from overwatchlooker.recording.replay import _synthesize_events
+        keys = [MetaKeyEntry(bit_index=0, virtual_key=0x09, name="tab")]
+        rows = [self._make_row(0, 0b0), self._make_row(1, 0b1), self._make_row(2, 0b0)]
+        events = _synthesize_events(self._make_meta(keys, rows))
+        assert len(events) == 2
+        assert events[0] == {"frame": 1, "type": "key_down", "key": "tab"}
+        assert events[1] == {"frame": 2, "type": "key_up", "key": "tab"}
+
+    def test_multiple_keys_simultaneous(self):
+        from overwatchlooker.recording.replay import _synthesize_events
+        keys = [
+            MetaKeyEntry(bit_index=0, virtual_key=0x09, name="tab"),
+            MetaKeyEntry(bit_index=1, virtual_key=0xA4, name="alt_l"),
+        ]
+        rows = [self._make_row(0, 0b00), self._make_row(1, 0b11)]
+        events = _synthesize_events(self._make_meta(keys, rows))
+        assert len(events) == 2
+        names = {e["key"] for e in events}
+        assert names == {"tab", "alt_l"}
+
+    def test_no_events_when_mask_unchanged(self):
+        from overwatchlooker.recording.replay import _synthesize_events
+        keys = [MetaKeyEntry(bit_index=0, virtual_key=0x09, name="tab")]
+        # Both frames have mask=0 — no transitions
+        rows = [self._make_row(0, 0b0), self._make_row(1, 0b0)]
+        events = _synthesize_events(self._make_meta(keys, rows))
+        assert len(events) == 0
+
 
     def test_final_hero_removed_from_crops(self):
         """The hero visible in the final screenshot should be removed from crops."""
