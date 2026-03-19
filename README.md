@@ -97,6 +97,7 @@ Replays a previously recorded session at max speed, running the full detection a
 | `--win` | Hint that the match result is VICTORY |
 | `--loss` | Hint that the match result is DEFEAT |
 | `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
+| `--overwolf` | Start Overwolf GEP receiver (accepts OverwatchListener connections on port 28025) |
 
 ## Output format
 
@@ -172,7 +173,7 @@ Sends the screenshot to Claude with a structured JSON schema prompt. Same featur
 
 The app can record gameplay sessions for later replay and analysis.
 
-**Recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Produces `recording.mp4` + `recording.meta` in timestamped directories under `recordings/`.
+**Recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Overwolf GEP events (if `--overwolf` is active) are stored as JSONL in a `.overwolf.jsonl` file. Produces `recording.mp4` + `recording.meta` (+ `recording.overwolf.jsonl`) in timestamped directories under `recordings/`.
 
 **Replay:** Use `--replay <dir>` or `--replay <file.mp4>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 
@@ -207,6 +208,7 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `MCP_URL` | -- | MCP server URL for match data upload |
 | `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
 | `WS_PORT` | `42685` | WebSocket server port for companion apps |
+| `OVERWOLF_PORT` | `28025` | Overwolf GEP receiver port (OverwatchListener connects here) |
 
 ## Project structure
 
@@ -236,6 +238,7 @@ overwatchlooker/
   telegram.py                    # Telethon message sending
   mcp_client.py                  # MCP server client (Streamable HTTP)
   ws_server.py                   # WebSocket server for companion apps
+  overwolf.py                    # Overwolf GEP receiver (typed events, queue, recording)
 docs/
   websocket-protocol.md          # WebSocket event protocol reference
 recordings/                      # Recorded gameplay sessions

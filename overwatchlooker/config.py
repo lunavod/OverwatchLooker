@@ -42,3 +42,6 @@ MCP_SOURCE: str = os.environ.get("MCP_SOURCE", "looker")
 
 # WebSocket server for companion app
 WS_PORT: int = int(os.environ.get("WS_PORT", "42685"))
+
+# Overwolf receiver (OverwatchListener connects here)
+OVERWOLF_PORT: int = int(os.environ.get("OVERWOLF_PORT", "28025"))

@@ -65,6 +65,11 @@ def main():
         action="store_true",
         help="Start WebSocket server for companion app",
     )
+    parser.add_argument(
+        "--overwolf",
+        action="store_true",
+        help="Start Overwolf GEP receiver (accepts OverwatchListener connections)",
+    )
     result_group = parser.add_mutually_exclusive_group()
     result_group.add_argument(
         "--win",
@@ -94,6 +99,14 @@ def main():
         ws_server = WsServer(event_bus, port=WS_PORT)
         ws_server.start()
 
+    # Start Overwolf receiver if requested
+    overwolf_receiver = None
+    if args.overwolf:
+        from overwatchlooker.overwolf import OverwolfReceiver
+        from overwatchlooker.config import OVERWOLF_PORT
+        overwolf_receiver = OverwolfReceiver(port=OVERWOLF_PORT)
+        overwolf_receiver.start()
+
     features = [f"analyzer={analyzer}"]
     if args.tg:
         features.append("telegram")
@@ -104,6 +117,9 @@ def main():
     if args.ws:
         from overwatchlooker.config import WS_PORT
         features.append(f"ws://0.0.0.0:{WS_PORT}")
+    if args.overwolf:
+        from overwatchlooker.config import OVERWOLF_PORT
+        features.append(f"overwolf://0.0.0.0:{OVERWOLF_PORT}")
     print_status(f"OverwatchLooker started ({', '.join(features)})")
 
     if args.image:
@@ -170,7 +186,8 @@ def main():
                      f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
 
         app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
-                  replay_source=replay, no_analysis=args.no_analysis, event_bus=event_bus)
+                  replay_source=replay, no_analysis=args.no_analysis, event_bus=event_bus,
+                  overwolf_receiver=overwolf_receiver)
         app._start_listening()
 
         try:
@@ -195,7 +212,7 @@ def main():
             print_status("Replay finished.")
     else:
         app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
-                  event_bus=event_bus)
+                  event_bus=event_bus, overwolf_receiver=overwolf_receiver)
         app.run()
 
 

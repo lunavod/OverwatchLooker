@@ -74,9 +74,11 @@ class ReplaySource:
         if source.is_dir():
             video_path = source / "recording.mp4"
             meta_path = source / "recording.meta"
+            overwolf_path = source / "recording.overwolf.jsonl"
         elif source.suffix == ".mp4":
             video_path = source
             meta_path = source.with_suffix(".meta")
+            overwolf_path = source.with_suffix(".overwolf.jsonl")
         else:
             raise FileNotFoundError(f"Cannot determine recording format from: {source}")
 
@@ -106,6 +108,11 @@ class ReplaySource:
         else:
             _logger.warning(f"No .meta file found at {meta_path}, replay without keyboard data")
 
+        # Overwolf events path (may or may not exist)
+        self._overwolf_events_path: Path | None = overwolf_path if overwolf_path.exists() else None
+        if self._overwolf_events_path:
+            _logger.info(f"Found Overwolf events: {overwolf_path}")
+
         _logger.info(
             f"Replay loaded: {self._frame_count} frames, {self._duration:.1f}s, "
             f"{self._resolution[0]}x{self._resolution[1]}"
@@ -134,6 +141,10 @@ class ReplaySource:
     @property
     def events(self) -> list[dict]:
         return list(self._events)
+
+    @property
+    def overwolf_events_path(self) -> Path | None:
+        return self._overwolf_events_path
 
     def close(self) -> None:
         """Release resources."""

@@ -16,7 +16,8 @@ from overwatchlooker.display import print_analysis, print_error, print_status
 
 if TYPE_CHECKING:
     from memoir_capture import CaptureEngine
-    from overwatchlooker.tick import ChatSystem, SubtitleSystem, TickLoop
+    from overwatchlooker.overwolf import OverwolfEventQueue, OverwolfReceiver
+    from overwatchlooker.tick import ChatSystem, OverwolfSystem, SubtitleSystem, TickLoop
     from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
@@ -62,7 +63,8 @@ _OW_STABILITY_TIME = 5.0  # seconds OW must be present before starting engine
 class App:
     def __init__(self, use_telegram: bool = False, use_mcp: bool = False,
                  use_transcript: bool = False, replay_source=None,
-                 no_analysis: bool = False, event_bus: EventBus | None = None):
+                 no_analysis: bool = False, event_bus: EventBus | None = None,
+                 overwolf_receiver: OverwolfReceiver | None = None):
         self._active = False
         self._detector: SubtitleSystem | None = None
         self._analyzing = False
@@ -79,6 +81,9 @@ class App:
         self._subtitle_system: SubtitleSystem | None = None
         self._chat_system: ChatSystem | None = None
         self._bus = event_bus
+        self._overwolf = overwolf_receiver
+        self._overwolf_queue: OverwolfEventQueue | None = None
+        self._overwolf_system: OverwolfSystem | None = None
         self._icon: pystray.Icon | None = None
         self._cooldown_until_tick: int = 0  # ignore tab/crop events until this tick
         self._poll_thread: threading.Thread | None = None
@@ -86,6 +91,10 @@ class App:
         self._recording = False
         if event_bus:
             self._register_commands(event_bus)
+        if overwolf_receiver:
+            from overwatchlooker.overwolf import OverwolfEventQueue
+            self._overwolf_queue = OverwolfEventQueue()
+            overwolf_receiver.add_listener(self._overwolf_queue.push)
 
     def _register_commands(self, bus: EventBus) -> None:
         """Register command handlers on the event bus."""
@@ -113,6 +122,11 @@ class App:
         """Emit an event to the WebSocket bus if enabled."""
         if self._bus:
             self._bus.emit(event)
+
+    def _on_overwolf_event(self, event: object) -> None:
+        """Handle a typed event from the Overwolf receiver."""
+        # Log all events for now — will be wired into match state later
+        _logger.info(f"Overwolf: {type(event).__name__}: {event}")
 
     def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str) -> None:
         """Store a valid Tab screenshot (called by TabCaptureSystem).
@@ -397,7 +411,7 @@ class App:
 
         from overwatchlooker.tick import (
             ChatSystem, MemoirFrameSource, MemoirInputSource,
-            SubtitleSystem, TabCaptureSystem, TickLoop,
+            OverwolfSystem, SubtitleSystem, TabCaptureSystem, TickLoop,
         )
         from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
 
@@ -425,6 +439,13 @@ class App:
         chat_system = ChatSystem(on_player_change=self._on_player_change)
         self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
         self._chat_system = chat_system
+
+        # Overwolf event system (drains queue each tick)
+        if self._overwolf_queue:
+            overwolf_system = OverwolfSystem(
+                self._overwolf_queue, on_event=self._on_overwolf_event)
+            self._tick_loop.register(overwolf_system.on_tick, every_n_ticks=1)
+            self._overwolf_system = overwolf_system
 
         tick_thread = threading.Thread(target=self._tick_loop.run, daemon=True)
         tick_thread.start()
@@ -454,6 +475,9 @@ class App:
         if hasattr(self, '_subtitle_system') and self._subtitle_system:
             self._subtitle_system.close()
             self._subtitle_system = None
+        if self._overwolf_system:
+            self._overwolf_system.clear_writer()
+            self._overwolf_system = None
         self._chat_system = None
         self._detector = None
         if self._engine:
@@ -491,9 +515,10 @@ class App:
         if self._replay_source:
             # Replay mode: use ReplayFrameSource/ReplayInputSource directly
             from overwatchlooker.tick import (
-                ChatSystem, ReplayFrameSource, ReplayInputSource,
-                SubtitleSystem, TabCaptureSystem, TickLoop,
+                ChatSystem, OverwolfSystem, ReplayFrameSource, ReplayInputSource,
+                ReplayOverwolfSource, SubtitleSystem, TabCaptureSystem, TickLoop,
             )
+            from overwatchlooker.overwolf import OverwolfEventQueue, load_overwolf_events
             from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
 
             fps = self._replay_source.fps
@@ -519,6 +544,19 @@ class App:
             chat_system = ChatSystem(on_player_change=self._on_player_change)
             self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
             self._chat_system = chat_system
+
+            # Replay Overwolf events if recording has them
+            overwolf_events_path = self._replay_source.overwolf_events_path
+            if overwolf_events_path and overwolf_events_path.exists():
+                replay_queue = OverwolfEventQueue()
+                recorded_events = load_overwolf_events(overwolf_events_path)
+                replay_source_ow = ReplayOverwolfSource(recorded_events, replay_queue)
+                self._tick_loop.register_pre_tick(replay_source_ow.advance_to)
+                overwolf_system = OverwolfSystem(
+                    replay_queue, on_event=self._on_overwolf_event)
+                self._tick_loop.register(overwolf_system.on_tick, every_n_ticks=1)
+                self._overwolf_system = overwolf_system
+                _logger.info(f"Replaying {len(recorded_events)} Overwolf events")
 
             detect_mode = "replay"
         else:
@@ -603,6 +641,8 @@ class App:
             try:
                 self._engine.stop_recording()
                 self._recording = False
+                if self._overwolf_system:
+                    self._overwolf_system.clear_writer()
                 print_status("Recording stopped.")
                 show_notification("OverwatchLooker", "Recording saved.")
                 self._ws_emit({"type": "state", "recording": False})
@@ -617,6 +657,11 @@ class App:
                 base_path = rec_dir / "recording"
                 info = self._engine.start_recording(str(base_path))
                 self._recording = True
+                # Start Overwolf event recording alongside video
+                if self._overwolf_system:
+                    from overwatchlooker.overwolf import OverwolfRecordingWriter
+                    writer = OverwolfRecordingWriter(rec_dir / "recording.overwolf.jsonl")
+                    self._overwolf_system.set_writer(writer)
                 print_status(f"Recording to {info.video_path}")
                 show_notification("OverwatchLooker", "Recording started.")
                 self._ws_emit({"type": "state", "recording": True})
@@ -713,5 +758,7 @@ class App:
             except Exception:
                 pass
         self._stop_listening()
+        if self._overwolf:
+            self._overwolf.stop()
         if self._icon:
             self._icon.stop()

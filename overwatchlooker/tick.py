@@ -1,12 +1,18 @@
 """Tick-based frame loop for both live and replay modes."""
 
+from __future__ import annotations
+
 import logging
 import datetime
 import threading
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from overwatchlooker.overwolf import OverwolfEventQueue, OverwolfRecordingWriter
 
 import cv2
 import numpy as np
@@ -350,6 +356,55 @@ class SubtitleSystem:
             self._state.transcript_file = None
 
 
+class OverwolfSystem:
+    """Drains Overwolf event queue each tick, writes to recording, dispatches to app."""
+
+    def __init__(self, queue: OverwolfEventQueue,
+                 on_event: Callable[[Any], None] | None = None,
+                 writer: OverwolfRecordingWriter | None = None) -> None:
+        self._queue = queue
+        self._on_event = on_event
+        self._writer = writer
+
+    def set_writer(self, writer: OverwolfRecordingWriter | None) -> None:
+        self._writer = writer
+
+    def clear_writer(self) -> None:
+        if self._writer:
+            self._writer.close()
+            self._writer = None
+
+    def on_tick(self, ctx: TickContext) -> None:
+        events = self._queue.drain()
+        for event in events:
+            if self._writer:
+                self._writer.write(event, ctx.tick)
+            if self._on_event:
+                try:
+                    self._on_event(event)
+                except Exception as e:
+                    _logger.warning(f"Overwolf event handler error: {e}")
+
+
+class ReplayOverwolfSource:
+    """Feeds recorded Overwolf events into a queue at the right frame/tick."""
+
+    def __init__(self, events: Sequence[tuple[int, Any]],
+                 queue: OverwolfEventQueue) -> None:
+        self._events = events
+        self._queue = queue
+        self._idx = 0
+
+    def advance_to(self, tick: int) -> None:
+        """Push all events up to and including this tick into the queue."""
+        while self._idx < len(self._events):
+            frame, event = self._events[self._idx]
+            if frame > tick:
+                break
+            self._queue.push(event)
+            self._idx += 1
+
+
 class ChatSystem:
     """OCR chat detection for player join/leave events, runs every N ticks."""
 
@@ -389,12 +444,17 @@ class TickLoop:
         self.frame_source = frame_source
         self.input_source = input_source
         self._systems: list[tuple[int, object]] = []  # (interval, system_fn)
+        self._pre_tick_hooks: list[Callable[[int], None]] = []
         self._threads: list[threading.Thread] = []
         self.running = True
         self._current_tick = 0
 
     def register(self, on_tick, every_n_ticks: int = 1) -> None:
         self._systems.append((every_n_ticks, on_tick))
+
+    def register_pre_tick(self, hook) -> None:
+        """Register a hook called with (tick) before systems run each frame."""
+        self._pre_tick_hooks.append(hook)
 
     def run(self) -> None:
         n = len(self._systems)
@@ -425,6 +485,10 @@ class TickLoop:
 
                 sim_time = tick / self.fps
                 self.input_source.advance_to(tick)
+
+                # Pre-tick hooks (e.g. replay overwolf source feeding queue)
+                for hook in self._pre_tick_hooks:
+                    hook(tick)
 
                 self._current_tick = tick
                 ctx_holder[0] = TickContext(tick, sim_time, frame, self.input_source)
