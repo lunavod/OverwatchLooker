@@ -87,41 +87,43 @@ def find_portrait_end(row_bgr: np.ndarray, team_colors: list[tuple],
     return best
 
 
-def find_perk_circles(row_bgr: np.ndarray) -> list[tuple[int, int, int]]:
-    """Detect perk icons — white circles with black icons, >50% row height."""
+def find_large_circles(row_bgr: np.ndarray) -> list[tuple[int, int, int]]:
+    """Detect all large circles >50% row height (ult charge, perk icons).
+
+    These are filtered out of text groups since they aren't OCR targets.
+    """
     row_h = row_bgr.shape[0]
     gray = cv2.cvtColor(row_bgr, cv2.COLOR_BGR2GRAY)
-    rgb = cv2.cvtColor(row_bgr, cv2.COLOR_BGR2RGB)
 
     circles = cv2.HoughCircles(
         gray, cv2.HOUGH_GRADIENT, dp=1, minDist=50,
         param1=100, param2=40, minRadius=25, maxRadius=60,
     )
-    perks = []
+    result = []
     if circles is not None:
         for x, y, rad in np.round(circles[0]).astype(int):
-            if (rad * 2) / row_h < 0.5:
-                continue
-            mask = np.zeros(gray.shape, dtype=np.uint8)
-            cv2.circle(mask, (x, y), rad, 255, -1)
-            pixels = rgb[mask > 0]
-            true_black = np.mean((pixels < 60).all(axis=1))
-            true_white = np.mean((pixels > 180).all(axis=1))
-            if (true_black + true_white) > 0.7 and true_white > 0.3:
-                perks.append((x, y, rad))
-    return perks
+            if (rad * 2) / row_h >= 0.5:
+                result.append((x, y, rad))
+    return result
 
 
 def find_text_groups(row_bgr: np.ndarray,
-                     perks: list[tuple[int, int, int]],
+                     circles: list[tuple[int, int, int]],
                      ) -> list[tuple[int, int, int, int]]:
-    """Find white text bounding boxes, merge nearby ones, filter out perks.
+    """Find white text bounding boxes, merge nearby ones, filter out circles.
+
+    Circles (ult charge, perks) are masked out BEFORE merging to prevent
+    them from merging with adjacent text (e.g. ult "33" + player name).
 
     Returns list of (x, y, w, h) sorted left to right.
     """
     row_h, row_w = row_bgr.shape[:2]
     gray = cv2.cvtColor(row_bgr, cv2.COLOR_BGR2GRAY)
     white = (gray > 140).astype(np.uint8) * 255
+
+    # Erase circle regions from the white mask before finding contours
+    for cx, cy, cr in circles:
+        cv2.circle(white, (cx, cy), cr + 5, 0, -1)  # +5px margin
 
     contours, _ = cv2.findContours(white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     boxes = sorted(
@@ -147,26 +149,24 @@ def find_text_groups(row_bgr: np.ndarray,
             cur = [bx, by, bw, bh]
     groups.append(cur)
 
-    # Filter groups that contain a perk circle center
-    def contains_perk(gx, gy, gw, gh):
-        return any(gx <= px <= gx + gw and gy <= py <= gy + gh
-                   for px, py, _ in perks)
-
-    return [tuple(g) for g in groups if not contains_perk(*g)]
+    return [tuple(g) for g in groups]
 
 
 # ---------------------------------------------------------------------------
 # OCR
 # ---------------------------------------------------------------------------
 
-def ocr_crop(crop_bgr: np.ndarray, lang: str = "eng",
-             tessdata: str = r"C:\Program Files\Tesseract-OCR\tessdata") -> str:
-    """Run Tesseract PSM 7 (single line) on a BGR image crop."""
+_OW2_TESSDATA = str(Path(__file__).parent.parent / "training_data" / "output")
+
+
+def ocr_crop(crop_bgr: np.ndarray, lang: str = "ow2",
+             tessdata: str = _OW2_TESSDATA, psm: int = 7) -> str:
+    """Run Tesseract on a BGR image crop."""
     tmp = Path(tempfile.mktemp(suffix=".png"))
     cv2.imwrite(str(tmp), crop_bgr)
     try:
         result = subprocess.run(
-            ["tesseract", str(tmp), "stdout", "-l", lang, "--psm", "7"],
+            ["tesseract", str(tmp), "stdout", "-l", lang, "--psm", str(psm)],
             capture_output=True, text=True,
             env={**os.environ, "TESSDATA_PREFIX": tessdata},
         )
@@ -192,62 +192,109 @@ def make_color_mask(img_bgr: np.ndarray, team: str) -> np.ndarray:
                 (b > 10) & (b < 50)).astype(np.uint8) * 255
 
 
-def process_team(img_bgr: np.ndarray, team: str,
-                 debug_dir: Path | None = None) -> list[dict]:
-    """Extract all player data from one team's scoreboard.
-
-    Returns list of dicts: {name, E, A, D, DMG, H, MIT}.
-    """
-    is_ally = team == "ally"
-    team_colors = ALLY_BG_COLORS if is_ally else ENEMY_BG_COLORS
-
-    mask = make_color_mask(img_bgr, team)
-    if debug_dir:
-        cv2.imwrite(str(debug_dir / f"{team}_mask.png"), mask)
-
+def _extract_rows(img_bgr: np.ndarray, mask: np.ndarray,
+                  ) -> tuple[int, int, int, int, int, int]:
+    """Find scoreboard rect, count rows, return (bx, by, bw, bh, n_rows, row_h)."""
     bx, by, bw, bh = find_scoreboard_rect(mask)
     n_rows = count_player_rows(img_bgr, bx, by, bw, bh)
     row_h = bh // n_rows
+    return bx, by, bw, bh, n_rows, row_h
 
-    # Ally rows have an ult charge circle as the first group after portrait
-    skip_groups = 1 if is_ally else 0
-    stat_labels = ["E", "A", "D", "DMG", "H", "MIT"]
 
-    players = []
+def _get_portrait_cut(img_bgr: np.ndarray, bx: int, by: int, bw: int,
+                      row_h: int, n_rows: int, bh: int,
+                      team_colors: list[tuple]) -> int:
+    """Compute median portrait cut-x across all rows of a team."""
+    cuts = []
     for i in range(n_rows):
         y1 = i * row_h
         y2 = (i + 1) * row_h if i < n_rows - 1 else bh
         row_img = img_bgr[by + y1:by + y2, bx:bx + bw]
+        cut = find_portrait_end(row_img, team_colors)
+        if cut > 0:
+            cuts.append(cut)
+    return int(np.median(cuts)) if cuts else 0
 
-        # Trim portrait
-        cut_x = find_portrait_end(row_img, team_colors)
-        trimmed = row_img[:, cut_x:]
 
-        # Detect perks and text groups
-        perks = find_perk_circles(trimmed)
-        groups = find_text_groups(trimmed, perks)
+def process_scoreboard(img_bgr: np.ndarray,
+                       debug_dir: Path | None = None,
+                       ) -> tuple[list[dict], list[dict]]:
+    """Extract player data from both teams.
 
-        # Skip ult charge group for ally
-        data_groups = groups[skip_groups:]
+    Processes enemy first to get a clean portrait cut position (no ult
+    charge effects), then applies the same cut to ally rows.
 
-        # OCR each group
-        values = []
-        for gx, gy, gw, gh in data_groups:
-            crop = trimmed[gy:gy + gh, gx:gx + gw]
-            text = ocr_crop(crop)
-            values.append(text)
+    Returns (ally_players, enemy_players).
+    """
+    ally_mask = make_color_mask(img_bgr, "ally")
+    enemy_mask = make_color_mask(img_bgr, "enemy")
 
-        # Build player dict
-        player = {"name": values[0] if values else ""}
-        for j, label in enumerate(stat_labels):
-            player[label] = values[j + 1] if j + 1 < len(values) else ""
-        players.append(player)
+    if debug_dir:
+        cv2.imwrite(str(debug_dir / "ally_mask.png"), ally_mask)
+        cv2.imwrite(str(debug_dir / "enemy_mask.png"), enemy_mask)
 
-        if debug_dir:
-            cv2.imwrite(str(debug_dir / f"{team}_row_{i:02d}.png"), row_img)
-            cv2.imwrite(str(debug_dir / f"{team}_row_{i:02d}_trimmed.png"), trimmed)
+    # Enemy first — clean portrait detection (no ult effects)
+    e_bx, e_by, e_bw, e_bh, e_n, e_row_h = _extract_rows(img_bgr, enemy_mask)
+    portrait_cut = _get_portrait_cut(
+        img_bgr, e_bx, e_by, e_bw, e_row_h, e_n, e_bh, ENEMY_BG_COLORS)
 
-    return players
+    # Ally
+    a_bx, a_by, a_bw, a_bh, a_n, a_row_h = _extract_rows(img_bgr, ally_mask)
+
+    stat_labels = ["E", "A", "D", "DMG", "H", "MIT"]
+
+    def _process_team(bx, by, bw, bh, n_rows, row_h, team, is_ally):
+        players = []
+        for i in range(n_rows):
+            y1 = i * row_h
+            y2 = (i + 1) * row_h if i < n_rows - 1 else bh
+            row_img = img_bgr[by + y1:by + y2, bx:bx + bw]
+
+            # Trim portrait (use enemy-derived cut for both teams)
+            trimmed = row_img[:, portrait_cut:]
+
+            # For ally, cut the ult charge area (slightly less than full square)
+            if is_ally:
+                trimmed = trimmed[:, int(row_h * 0.95):]
+
+            # Detect circles (perks) and text groups
+            circles = find_large_circles(trimmed)
+            groups = find_text_groups(trimmed, circles)
+
+            # OCR each group with padding
+            th, tw = trimmed.shape[:2]
+            values = []
+            for idx, (gx, gy, gw, gh) in enumerate(groups):
+                pad = max(4, gh // 3)
+                x1 = max(0, gx - pad)
+                y1_ = max(0, gy - pad)
+                x2 = min(tw, gx + gw + pad)
+                y2_ = min(th, gy + gh + pad)
+                crop = trimmed[y1_:y2_, x1:x2]
+
+                if idx == 0:
+                    # Name group: may have title below, use PSM 6 + take first line
+                    text = ocr_crop(crop, psm=6)
+                    text = text.split("\n")[0].strip()
+                else:
+                    text = ocr_crop(crop)
+                values.append(text)
+
+            player = {"name": values[0] if values else ""}
+            for j, label in enumerate(stat_labels):
+                player[label] = values[j + 1] if j + 1 < len(values) else ""
+            players.append(player)
+
+            if debug_dir:
+                cv2.imwrite(str(debug_dir / f"{team}_row_{i:02d}.png"), row_img)
+                cv2.imwrite(str(debug_dir / f"{team}_row_{i:02d}_trimmed.png"), trimmed)
+
+        return players
+
+    enemy = _process_team(e_bx, e_by, e_bw, e_bh, e_n, e_row_h, "enemy", False)
+    ally = _process_team(a_bx, a_by, a_bw, a_bh, a_n, a_row_h, "ally", True)
+
+    return ally, enemy
 
 
 def print_team_table(team_name: str, players: list[dict]) -> None:
@@ -290,10 +337,8 @@ def main():
 
     print(f"Image: {img.shape[1]}x{img.shape[0]}")
 
-    ally = process_team(img, "ally", debug_dir=args.debug)
+    ally, enemy = process_scoreboard(img, debug_dir=args.debug)
     print_team_table("ALLY TEAM", ally)
-
-    enemy = process_team(img, "enemy", debug_dir=args.debug)
     print_team_table("ENEMY TEAM", enemy)
 
 

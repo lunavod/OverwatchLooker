@@ -50,6 +50,9 @@ tesstrain/
 training_data/
 debug_slicing/
 
+# PaddleOCR
+paddleocr_repo/
+
 # Test screenshots (not fixtures)
 test_*.png
 usernames/
