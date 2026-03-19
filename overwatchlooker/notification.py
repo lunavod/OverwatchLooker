@@ -1,7 +1,6 @@
 import io
 import math
 import struct
-import subprocess
 import threading
 import tkinter as tk
 import wave
@@ -10,11 +9,6 @@ import winsound
 import mss
 
 NOTIFICATION_VOLUME = 0.20  # 20% amplitude
-
-
-def copy_to_clipboard(text: str) -> None:
-    """Copy text to the system clipboard via clip.exe."""
-    subprocess.run("clip", input=text.encode("utf-16-le"), check=True)
 
 
 def _get_second_monitor_geometry() -> dict:

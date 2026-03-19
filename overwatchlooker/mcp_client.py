@@ -1,37 +1,45 @@
-"""Lightweight MCP client for submitting matches via Streamable HTTP."""
+"""MCP client for submitting matches via the official SDK."""
 
+import asyncio
 import base64
 import datetime
+import json
 import logging
 
-import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+from mcp.types import TextContent
 
 from overwatchlooker.config import MCP_SOURCE, MCP_URL
 
 _logger = logging.getLogger("overwatchlooker")
-
 
 def submit_match(
     data: dict,
     png_bytes: bytes | None = None,
     is_backfill: bool = False,
 ) -> dict:
-    """Submit a match to the MCP server. Returns the tool result."""
+    """Submit a match to the MCP server. Returns dict with match_id if available."""
     if not MCP_URL:
         raise RuntimeError("MCP_URL not set in .env")
 
+    return asyncio.run(_submit_match_async(data, png_bytes, is_backfill))
+
+
+async def _submit_match_async(
+    data: dict,
+    png_bytes: bytes | None,
+    is_backfill: bool,
+) -> dict:
     _logger.info(f"MCP: submitting match ({data['map_name']}, {data['mode']}, {data['queue_type']})")
 
-    players = data["players"]
-
-    # Build arguments matching the submit_match tool schema
-    args = {
+    args: dict = {
         "map_name": data["map_name"],
         "duration": data["duration"],
         "mode": data["mode"],
         "queue_type": data["queue_type"],
         "result": data["result"],
-        "players": players,
+        "players": data["players"],
         "source": MCP_SOURCE,
         "played_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "is_backfill": is_backfill,
@@ -52,55 +60,40 @@ def submit_match(
             "filename": "screenshot.png",
         }]
 
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "submit_match",
-            "arguments": args,
-        },
-    }
+    async with streamablehttp_client(MCP_URL) as (read_stream, write_stream, _):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool("submit_match", args)
 
-    mcp_headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-
-    # Initialize session, then call tool
-    with httpx.Client(timeout=30, headers=mcp_headers) as client:
-        # Send initialize
-        init_resp = client.post(MCP_URL, json={
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "overwatchlooker", "version": "1.0.0"},
-            },
-        })
-        init_resp.raise_for_status()
-        session_id = init_resp.headers.get("mcp-session-id")
-
-        headers = {}
-        if session_id:
-            headers["mcp-session-id"] = session_id
-
-        # Send initialized notification
-        client.post(MCP_URL, json={
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-        }, headers=headers)
-
-        # Call tool
-        resp = client.post(MCP_URL, json=payload, headers=headers)
-        resp.raise_for_status()
-        result = resp.json()
-
-    if "error" in result:
-        _logger.error(f"MCP error: {result['error']}")
-        raise RuntimeError(f"MCP error: {result['error']}")
+    if result.isError:
+        text = " ".join(
+            b.text for b in result.content if isinstance(b, TextContent)
+        )
+        _logger.error(f"MCP error: {text}")
+        raise RuntimeError(f"MCP error: {text}")
 
     _logger.info("MCP: match submitted successfully")
-    return result.get("result", {})
+
+    match_id = _extract_match_id(result)
+    return {"match_id": match_id} if match_id else {}
+
+
+def _extract_match_id(result) -> str | None:
+    """Extract match ID from CallToolResult via structured content or JSON text."""
+    if result.structuredContent:
+        for key in ("id", "match_id"):
+            if key in result.structuredContent:
+                return str(result.structuredContent[key])
+
+    for block in result.content:
+        if not isinstance(block, TextContent):
+            continue
+        try:
+            data = json.loads(block.text)
+            if isinstance(data, dict):
+                for key in ("id", "match_id"):
+                    if key in data:
+                        return str(data[key])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return None

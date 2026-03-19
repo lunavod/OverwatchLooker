@@ -261,6 +261,23 @@ Each hero in the `heroes` array:
 | `started_at` | `string?` | When this hero was first played (`M:SS` relative to match start) |
 | `stats` | `array` | Hero-specific stats from the Tab screen |
 
+### `mcp_submitted`
+
+Match was successfully uploaded to the MCP server. Sent after `analysis`, only when `--mcp` is enabled.
+
+```json
+{
+  "type": "mcp_submitted",
+  "match_id": "812eec68-22c0-4786-aa73-4c50c18b14b7"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `match_id` | `string?` | UUID of the created match, or `null` if the server didn't return one |
+
+---
+
 ## Commands
 
 Companion apps can send JSON messages to control OverwatchLooker. Each message must have a `command` field:
@@ -315,6 +332,7 @@ tab_capture  → another Tab press
 detection    → VICTORY/DEFEAT recognized
 analyzing    → LLM analysis begins
 analysis     → full match data ready
+mcp_submitted → match uploaded to MCP (only with --mcp)
 state        → analyzing: false
 ```
 

@@ -7,7 +7,7 @@ from PIL import Image
 
 from overwatchlooker.config import ANALYZER
 from overwatchlooker.display import print_analysis, print_error, print_status
-from overwatchlooker.notification import copy_to_clipboard, show_notification
+from overwatchlooker.notification import show_notification
 from overwatchlooker.tray import App
 
 
@@ -156,8 +156,7 @@ def main():
             else:
                 print_error("Failed to send to Telegram.")
         else:
-            copy_to_clipboard(formatted)
-            show_notification("OverwatchLooker", "Analysis complete. Copied to clipboard.")
+            show_notification("OverwatchLooker", "Analysis complete.")
     elif args.replay:
         from overwatchlooker.recording.replay import ReplaySource
 

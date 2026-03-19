@@ -40,3 +40,21 @@ batch_*.py
 # Recordings
 recordings/
 *.mkv
+
+# Fonts (downloaded, not source)
+*.ttf
+fonts/
+
+# Tesseract training
+tesstrain/
+training_data/
+debug_slicing/
+
+# Test screenshots (not fixtures)
+test_*.png
+usernames/
+AFLOAT.png
+usernames_and_titles.png
+
+# Generated data
+tools/mcp_player_names.txt

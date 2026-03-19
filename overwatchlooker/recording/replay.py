@@ -44,27 +44,17 @@ class FrameReader:
 
 def _synthesize_events(meta: MetaFile) -> list[dict]:
     """Convert keyboard_mask diffs between consecutive meta rows into key events."""
-    # Build bit → app name mapping from meta key table
-    bit_to_name: dict[int, str] = {}
-    for key_entry in meta.keys:
-        bit_to_name[key_entry.bit_index] = key_entry.name
-
     events: list[dict] = []
-    prev_mask = 0
-    for row in meta.rows:
-        mask = row.keyboard_mask
-        changed = mask ^ prev_mask
-        if changed:
-            for bit, name in bit_to_name.items():
-                bit_val = 1 << bit
-                if changed & bit_val:
-                    if mask & bit_val:
-                        events.append({"frame": row.record_frame_index,
-                                       "type": "key_down", "key": name})
-                    else:
-                        events.append({"frame": row.record_frame_index,
-                                       "type": "key_up", "key": name})
-        prev_mask = mask
+    prev_keys: set[str] = set()
+    for row in meta:
+        current = set(row.pressed_keys(meta.keys))
+        for key in current - prev_keys:
+            events.append({"frame": row.record_frame_index,
+                           "type": "key_down", "key": key})
+        for key in prev_keys - current:
+            events.append({"frame": row.record_frame_index,
+                           "type": "key_up", "key": key})
+        prev_keys = current
 
     events.sort(key=lambda e: e["frame"])
     return events

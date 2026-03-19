@@ -24,7 +24,8 @@ dependencies = [
     "questionary>=2.1.1",
     "pytesseract-api>=1.0.4",
     "websockets>=16.0",
-    "memoir-capture>=0.1.2",
+    "mcp>=1.0.0",
+    "memoir-capture>=0.1.3",
 ]
 
 [tool.pytest.ini_options]

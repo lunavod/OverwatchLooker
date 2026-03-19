@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
-from overwatchlooker.notification import copy_to_clipboard, show_notification  # noqa: E402
+from overwatchlooker.notification import show_notification  # noqa: E402
 from overwatchlooker.screenshot import (  # noqa: E402
     crop_hero_panel,
     has_hero_panel,
@@ -29,6 +29,13 @@ from overwatchlooker.screenshot import (  # noqa: E402
 from overwatchlooker.heroes import edit_distance as _edit_distance  # noqa: E402
 
 _RECORDINGS_DIR = Path(__file__).parent.parent / "recordings"
+
+# Eagerly load pywintypes on the main thread — pywin32's DLL can fail to load
+# in worker threads if it hasn't been initialized yet (transitive dep of mcp SDK).
+try:
+    import pywintypes  # noqa: F401
+except ImportError:
+    pass
 
 
 
@@ -259,28 +266,36 @@ class App:
 
                 formatted = print_analysis(display_text)
                 self._ws_emit({"type": "analysis", "data": result})
+
+                # MCP upload
                 if self._use_mcp:
                     from overwatchlooker.mcp_client import submit_match
                     try:
-                        submit_match(result, png_bytes=png_bytes)
+                        mcp_result = submit_match(result, png_bytes=png_bytes)
+                        match_id = mcp_result.get("match_id")
                         print_status("Uploaded to MCP.")
+                        self._ws_emit({"type": "mcp_submitted",
+                                       "match_id": match_id})
                     except Exception as e:
                         print_error(f"MCP upload failed: {e}")
+
+                # Notification + clipboard (isolated so failures don't kill MCP)
                 if is_fallback:
                     notif_msg = (f"{detection_result} — Used fallback screenshot "
                                  f"({time_diff:.0f}s older, latest was rejected).")
                 else:
                     notif_msg = detection_result
-                if self._use_telegram:
-                    from overwatchlooker.telegram import send_message
-                    if send_message(formatted):
-                        show_notification("OverwatchLooker", f"{notif_msg} — Sent to Telegram.")
+                try:
+                    if self._use_telegram:
+                        from overwatchlooker.telegram import send_message
+                        if send_message(formatted):
+                            show_notification("OverwatchLooker", f"{notif_msg} — Sent to Telegram.")
+                        else:
+                            print_error("Failed to send to Telegram.")
                     else:
-                        print_error("Failed to send to Telegram.")
-                        copy_to_clipboard(formatted)
-                else:
-                    copy_to_clipboard(formatted)
-                    show_notification("OverwatchLooker", f"{notif_msg} — Copied to clipboard.")
+                        show_notification("OverwatchLooker", notif_msg)
+                except Exception as e:
+                    _logger.warning(f"Notification failed: {e}")
                 return
 
             # All screenshots were rejected or too old
