@@ -25,7 +25,8 @@ def _have_fixtures() -> bool:
 @pytest.fixture(autouse=True)
 def _suppress_notifications():
     """Prevent desktop notifications and clipboard writes during tests."""
-    with patch("overwatchlooker.notification.show_notification"):
+    with patch("overwatchlooker.notification.show_notification"), \
+         patch("overwatchlooker.tray.show_notification"):
         yield
 
 

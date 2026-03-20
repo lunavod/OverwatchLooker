@@ -349,6 +349,7 @@ class SubtitleSystem:
     def reset_match(self) -> None:
         self._state.hero_map.clear()
         self._state.hero_history.clear()
+        self._pending_detection = None
 
     def close(self) -> None:
         if self._state.transcript_file:

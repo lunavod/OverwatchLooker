@@ -1,8 +1,8 @@
 # OverwatchLooker
 
-Automated Overwatch 2 match analyzer. Captures your Tab scoreboard, extracts structured match data (map, mode, queue type, result, player stats, hero switches, player joins/leaves), and copies it to clipboard, sends it to Telegram, or uploads it to an MCP server.
+Automated Overwatch 2 match tracker. Collects structured match data (map, mode, queue type, result, full roster with battletags/heroes/roles/stats, hero switches, player joins/leaves) during gameplay and prints a summary at match end.
 
-Two analyzer backends: **ChatGPT/Codex** (cloud, default) or **Claude Vision** (cloud). Screen capture uses **memoir-capture** (Windows Graphics Capture + NVENC H.265). Victory/defeat is detected automatically via **subtitle OCR** with Tesseract. Player joins/leaves are tracked via **chat OCR**. Supports **recording** gameplay sessions and **replaying** them for offline analysis.
+Primary data source is **Overwolf GEP** (via OverwatchListener) which provides real-time roster, stats, hero swaps, and match lifecycle events for all 10 players. Fallback detection via **subtitle OCR** (Tesseract) for victory/defeat and hero switches when Overwolf is not available. Screen capture uses **memoir-capture** (Windows Graphics Capture + NVENC H.265). Supports **recording** gameplay sessions and **replaying** them for offline analysis. Legacy LLM analyzer backends (ChatGPT/Codex, Claude Vision) are preserved for single-image analysis but no longer used in live mode.
 
 ## Setup
 
@@ -38,24 +38,23 @@ MCP_URL=https://your-mcp-server.example.com/mcp
 ### Tray mode (default)
 
 ```bash
-uv run python main.py
-uv run python main.py --tg       # send results to Telegram
-uv run python main.py --mcp      # upload structured match data to MCP server
-uv run python main.py --transcript  # log subtitle OCR to transcripts/
+uv run python main.py --overwolf   # recommended: full Overwolf GEP data
+uv run python main.py              # fallback: subtitle/chat OCR only
+uv run python main.py --transcript # log subtitle OCR to transcripts/
 ```
 
 Starts a system tray application with a tick-based frame loop:
 
-1. **Hold Tab** in-game to open the scoreboard — a screenshot is captured automatically via memoir-capture (Windows Graphics Capture)
-2. **Hero switches are tracked** in real time via subtitle OCR (Tesseract)
-3. **Victory/defeat is detected automatically** via subtitle OCR
-4. Analysis runs, result is **copied to clipboard** (or sent to Telegram with `--tg`)
-5. A **notification** appears on the second monitor with a chime
+1. **Overwolf GEP** provides real-time match data: roster (all 10 players with battletags, heroes, roles, stats), match lifecycle, map, mode, result
+2. **Hold Tab** in-game to open the scoreboard — a screenshot is captured automatically via memoir-capture
+3. **Subtitle OCR** provides fallback hero switch tracking and victory/defeat detection when Overwolf is not available
+4. At match end, a **formatted summary** is printed to console and logged
+5. A **notification** appears with the match result
 
 Tray menu (right-click icon):
 - **Start/Stop Listening** -- toggle hotkey + detection
 - **Start/Stop Recording** -- record gameplay to `recordings/` for later replay
-- **Submit last tab (win/loss)** -- manually trigger analysis with a known result
+- **Submit last tab (win/loss)** -- manually set match result and trigger match end summary
 - **Quit**
 
 Press **Ctrl+C** in the terminal to exit.
@@ -102,53 +101,57 @@ Replays a previously recorded session at max speed, running the full detection a
 ## Output format
 
 ```
-============================================================
-  OVERWATCH LOOKER -- Analysis at 2026-02-20 06:19:57
-============================================================
-MAP: Lijiang Tower
-TIME: 8:06
-MODE: Control
-QUEUE: COMPETITIVE
-RESULT: DEFEAT
+═══ MATCH COMPLETE ═══
+Map: Havana | Escort | Unranked | Role Queue
+Result: VICTORY | Duration: 9:30
+Rounds: 1 (9:30)
 
-=== YOUR TEAM ===
-Role | Player | E | A | D | DMG | H | MIT
-TANK | RUUKOYU | 13 | 0 | 4 | 8,990 | 2,037 | 10,102
-DPS | Player2 | 8 | 3 | 5 | 6,200 | 0 | 0
-DPS | Player3 | 10 | 2 | 3 | 7,100 | 0 | 0
-SUPPORT | Player4 | 2 | 15 | 4 | 2,300 | 8,500 | 0
-SUPPORT | Player5 | 3 | 12 | 6 | 1,800 | 7,200 | 0
+── ALLY (Team 1) ──
+  TANK  lunavod#21722        Reinhardt -> Ramattra (1:11)    24/5/2   9483 dmg  441 heal  4732 mit
+  DAMAGE bexest#2955          Pharah                          13/8/10  4752 dmg  0 heal  0 mit
+  DAMAGE Szaths#2663          Emre                            18/6/0   5946 dmg  651 heal  0 mit
+  SUPPORT Cucciolo#11914       Lucio -> Kiriko (1:26)          10/5/19  3544 dmg  7024 heal  0 mit
+  SUPPORT YoungdaggerD#2341    Brigitte -> Jetpack Cat -> Ana  17/6/13  4603 dmg  3692 heal  814 mit
 
-=== ENEMY TEAM ===
-Role | Player | E | A | D | DMG | H | MIT
-...
-
-HERO STATS:
-Mizuki - Players Saved: 11; Weapon Accuracy: 31%; ...
-============================================================
+── ENEMY (Team 0) ──
+  TANK  BioL2004#2426        Winston                         10/10/2  6204 dmg  1041 heal  9720 mit
+  DAMAGE LeirbaXx#2447        Cassidy                         16/7/3   7620 dmg  0 heal  218 mit
+  DAMAGE Skoupayou#1964       Hanzo -> Junkrat -> Ashe        12/8/2   6502 dmg  0 heal  0 mit
+  SUPPORT Khraym#2826          Illari                          12/6/7   4057 dmg  6708 heal  0 mit
+  SUPPORT Verdauga#2454        Ana                             6/8/5    2829 dmg  3408 heal  855 mit
+═══════════════════════
 ```
 
 ## Detection
 
-### Subtitle OCR
+### Overwolf GEP (primary)
+
+With `--overwolf`, connects to the OverwatchListener Overwolf app via WebSocket. Provides structured real-time data:
+
+- **Match lifecycle** — start, end, rounds, outcome (VICTORY/DEFEAT)
+- **Full roster** — all 10 players with battletags, heroes, roles, team assignment
+- **Live stats** — K/D/A/damage/healing/mitigation updated continuously
+- **Hero swaps** — detected via roster hero_name changes, with stats snapshot at swap time
+- **Match metadata** — map, mode, game type, queue type, pseudo match ID
+
+Hero names from Overwolf are fuzzy-matched against the canonical hero list for proper casing (e.g. `JETPACKCAT` → `Jetpack Cat`).
+
+### Subtitle OCR (fallback)
 
 Monitors the bottom-center of the screen for subtitle text using Tesseract (via pytesseract-api, direct C API bindings). Runs as part of the tick-based frame loop.
 
 **Victory/defeat detection:**
 1. **HSV pre-filter** -- checks for white pixels in the subtitle region (bottom 10%, center 20%)
 2. **Tesseract confirmation** -- runs OCR only when white pixels are detected
-3. **Configurable delay** -- waits 5 seconds after detection before triggering analysis
 
 **Hero switch tracking:**
 - Detects hero names in subtitle text (e.g., "Player switched to Tracer")
 - Fuzzy matching against the hero list using Levenshtein edit distance
-- Builds per-player hero history with timestamps for the full match
+- Deduped against Overwolf data when both sources are active
 
-Only activates when `overwatch.exe` is the foreground window. 30-second cooldown between detections.
+### Chat OCR (fallback)
 
-### Chat OCR
-
-Monitors the bottom-left of the screen for yellow chat text. Detects player join/leave events (`[player] joined the game`, `[player] left the game`) using Tesseract. Fuzzy dedup prevents OCR noise from creating duplicate events. Detected join times are stored as `joined_at` on player records when uploading to MCP.
+Monitors the bottom-left of the screen for yellow chat text. Detects player join/leave events (`[player] joined the game`, `[player] left the game`) using Tesseract. Fuzzy dedup prevents OCR noise from creating duplicate events.
 
 ## Analyzer backends
 
@@ -216,8 +219,9 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 main.py                          # CLI entry point
 overwatchlooker/
   config.py                      # Environment config + constants
+  match_state.py                 # Centralized match state (MatchState, PlayerState, formatting)
   tick.py                        # Tick-based frame loop (live + replay)
-  tray.py                        # System tray app, analysis orchestration
+  tray.py                        # System tray app, Overwolf event dispatch, match lifecycle
   hotkey.py                      # Tab key listener (pynput, Windows foreground check)
   screenshot.py                  # OW2 Tab screen validation, Tesseract OCR, screenshot saving
   subtitle_listener.py           # Subtitle-based detection + hero switch tracking

@@ -160,19 +160,19 @@ class RosterEntry:
     def from_json(cls, raw: str) -> RosterEntry:
         d = json.loads(raw)
         return cls(
-            player_name=d.get("player_name", ""),
-            battlenet_tag=d.get("battlenet_tag", ""),
+            player_name=d.get("player_name") or "",
+            battlenet_tag=d.get("battlenet_tag") or "",
             is_local=bool(d.get("is_local", False)),
             is_teammate=bool(d.get("is_teammate", False)),
-            hero_name=d.get("hero_name", ""),
-            hero_role=d.get("hero_role", ""),
-            team=int(d.get("team", 0)),
-            kills=int(d.get("kills", 0)),
-            deaths=int(d.get("deaths", 0)),
-            assists=int(d.get("assists", 0)),
-            damage=float(d.get("damage", 0)),
-            healed=float(d.get("healed", 0)),
-            mitigated=float(d.get("mitigated", 0)),
+            hero_name=d.get("hero_name") or "",
+            hero_role=d.get("hero_role") or "",
+            team=_safe_int(d.get("team", 0)),
+            kills=_safe_int(d.get("kills", 0)),
+            deaths=_safe_int(d.get("deaths", 0)),
+            assists=_safe_int(d.get("assists", 0)),
+            damage=float(d.get("damage") or 0),
+            healed=float(d.get("healed") or 0),
+            mitigated=float(d.get("mitigated") or 0),
         )
 
 
@@ -412,8 +412,9 @@ def _parse_message(raw: dict[str, Any]) -> list[OverwolfEvent]:
                 _logger.debug(f"Unknown game_state: {gi['game_state']}")
         if "game_mode" in gi:
             code = gi["game_mode"]
+            padded = code.zfill(4) if code else code
             events.append(GameModeUpdate(
-                code=code, name=MODE_CODES.get(code, f"Unknown ({code})"), timestamp=ts))
+                code=code, name=MODE_CODES.get(padded, f"Unknown ({code})"), timestamp=ts))
         if "battle_tag" in gi:
             events.append(BattleTagUpdate(battle_tag=gi["battle_tag"], timestamp=ts))
 

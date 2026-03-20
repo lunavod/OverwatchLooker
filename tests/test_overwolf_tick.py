@@ -159,3 +159,19 @@ class TestTickLoopPreTick:
         loop.run()
 
         assert hook_calls == [0, 1, 2]
+
+
+class TestSubtitleSystemReset:
+    def test_reset_match_clears_pending_detection(self):
+        """reset_match should cancel any pending delayed detection."""
+        from overwatchlooker.tick import SubtitleSystem
+
+        fired = []
+        system = SubtitleSystem(
+            on_match=lambda result, t: fired.append(result),
+            detection_delay_ticks=100,
+        )
+        # Simulate a pending detection
+        system._pending_detection = ("VICTORY", 50)
+        system.reset_match()
+        assert system._pending_detection is None

@@ -107,11 +107,7 @@ def main():
         overwolf_receiver = OverwolfReceiver(port=OVERWOLF_PORT)
         overwolf_receiver.start()
 
-    features = [f"analyzer={analyzer}"]
-    if args.tg:
-        features.append("telegram")
-    if args.mcp:
-        features.append("mcp")
+    features = []
     if args.transcript:
         features.append("transcript")
     if args.ws:
@@ -185,8 +181,8 @@ def main():
         print_status(f"Replaying {source.name} ({replay.duration:.0f}s, "
                      f"{replay.resolution[0]}x{replay.resolution[1]}, max speed)")
 
-        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
-                  replay_source=replay, no_analysis=args.no_analysis, event_bus=event_bus,
+        app = App(use_transcript=args.transcript,
+                  replay_source=replay, event_bus=event_bus,
                   overwolf_receiver=overwolf_receiver)
         app._start_listening()
 
@@ -201,17 +197,11 @@ def main():
                 final_sim_time = replay.frame_count / replay.fps
                 app._subtitle_system.flush_pending(final_sim_time)
 
-            # Wait for any in-progress analysis to finish
-            import time as _time
-            for _ in range(60):
-                if not app._analyzing:
-                    break
-                _time.sleep(1.0)
             app._stop_listening()
             replay.close()
             print_status("Replay finished.")
     else:
-        app = App(use_telegram=args.tg, use_mcp=args.mcp, use_transcript=args.transcript,
+        app = App(use_transcript=args.transcript,
                   event_bus=event_bus, overwolf_receiver=overwolf_receiver)
         app.run()
 

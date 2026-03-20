@@ -11,23 +11,43 @@ from typing import TYPE_CHECKING
 import pystray  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw, ImageFont
 
-from overwatchlooker.config import ANALYZER, SCREENSHOT_MAX_AGE_SECONDS
-from overwatchlooker.display import print_analysis, print_error, print_status
+from overwatchlooker.display import print_error, print_status
+from overwatchlooker.heroes import edit_distance as _edit_distance
+from overwatchlooker.match_state import (
+    HeroPanel,
+    HeroSource,
+    HeroSwap,
+    MatchResult,
+    MatchState,
+    PlayerRole,
+    ResultSource,
+    RoundInfo,
+    StatsSnapshot,
+    TabScreenshot,
+    format_match_state,
+)
+from overwatchlooker.notification import show_notification
+from overwatchlooker.overwolf import (
+    GameModeUpdate,
+    GameTypeUpdate,
+    MapUpdate,
+    MatchEndEvent,
+    MatchOutcomeUpdate,
+    MatchStartEvent,
+    PseudoMatchIdUpdate,
+    QueueTypeUpdate,
+    RosterUpdate,
+    RoundEndEvent,
+    RoundStartEvent,
+)
 
 if TYPE_CHECKING:
     from memoir_capture import CaptureEngine
-    from overwatchlooker.overwolf import OverwolfEventQueue, OverwolfReceiver
+    from overwatchlooker.overwolf import OverwolfEventQueue, OverwolfEvent, OverwolfReceiver
     from overwatchlooker.tick import ChatSystem, OverwolfSystem, SubtitleSystem, TickLoop
     from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
-from overwatchlooker.notification import show_notification  # noqa: E402
-from overwatchlooker.screenshot import (  # noqa: E402
-    crop_hero_panel,
-    has_hero_panel,
-    ocr_hero_name,
-)
-from overwatchlooker.heroes import edit_distance as _edit_distance  # noqa: E402
 
 _RECORDINGS_DIR = Path(__file__).parent.parent / "recordings"
 
@@ -53,7 +73,6 @@ def _create_icon_image() -> Image.Image:
     return img
 
 
-_AUDIO_ANALYSIS_DELAY = 5.0  # seconds to wait after audio trigger before analyzing
 _TAB_DEBOUNCE = 1.5  # ignore Tab presses within this window of each other
 _POST_SUBMIT_COOLDOWN = 30.0  # seconds to ignore tab/crop events after detection
 _OW_POLL_INTERVAL = 2.0  # seconds between OW window checks
@@ -61,21 +80,16 @@ _OW_STABILITY_TIME = 5.0  # seconds OW must be present before starting engine
 
 
 class App:
-    def __init__(self, use_telegram: bool = False, use_mcp: bool = False,
-                 use_transcript: bool = False, replay_source=None,
-                 no_analysis: bool = False, event_bus: EventBus | None = None,
+    def __init__(self, use_transcript: bool = False, replay_source=None,
+                 event_bus: EventBus | None = None,
                  overwolf_receiver: OverwolfReceiver | None = None):
         self._active = False
         self._detector: SubtitleSystem | None = None
-        self._analyzing = False
         self._lock = threading.Lock()
-        self._valid_tabs: list[tuple[bytes, float, str]] = []  # last 2 valid (png_bytes, timestamp, filename)
-        self._hero_crops: dict[str, bytes] = {}  # hero_name -> cropped PNG bytes
-        self._use_telegram = use_telegram
-        self._use_mcp = use_mcp
+        self._match_state: MatchState = MatchState()
+        self._last_match_end_ts: float = 0.0  # monotonic time of last match end
         self._use_transcript = use_transcript
         self._replay_source = replay_source  # ReplaySource for replay mode
-        self._no_analysis = no_analysis
         self._engine: CaptureEngine | None = None
         self._tick_loop: TickLoop | None = None
         self._subtitle_system: SubtitleSystem | None = None
@@ -123,10 +137,201 @@ class App:
         if self._bus:
             self._bus.emit(event)
 
-    def _on_overwolf_event(self, event: object) -> None:
-        """Handle a typed event from the Overwolf receiver."""
-        # Log all events for now — will be wired into match state later
+    def _on_overwolf_event(self, event: OverwolfEvent) -> None:
+        """Handle a typed event from the Overwolf receiver — update MatchState."""
         _logger.info(f"Overwolf: {type(event).__name__}: {event}")
+        ms = self._match_state
+
+        if isinstance(event, MatchStartEvent):
+            carried = [a for a in ("map_name", "mode", "game_type", "queue_type")
+                       if getattr(ms, a)]
+            _logger.info(f"MatchStart: creating new MatchState "
+                         f"(carrying over: {carried}, "
+                         f"buffered players: {len(ms.players)})")
+            self._match_state = MatchState(started_at=event.timestamp)
+            # Carry over any pre-match info that arrived before MatchStartEvent
+            new = self._match_state
+            for attr in ("map_name", "map_code", "mode", "mode_code",
+                         "game_type", "queue_type", "pseudo_match_id"):
+                old_val = getattr(ms, attr)
+                new_val = getattr(new, attr)
+                if old_val and not new_val:
+                    setattr(new, attr, old_val)
+            # Carry over players (roster updates may arrive before match_start)
+            if ms.players and not new.players:
+                new.players = ms.players
+                new._local_team = ms._local_team
+            ms = new
+            new.dump_to_log("MatchStart")
+            return
+
+        if isinstance(event, MatchEndEvent):
+            _logger.info(f"MatchEnd: ts={event.timestamp}")
+            ms.ended_at = event.timestamp
+            self._trigger_match_end()
+            return
+
+        if isinstance(event, MatchOutcomeUpdate):
+            from overwatchlooker.overwolf import MatchOutcome
+            _logger.info(f"MatchOutcome: {event.outcome.value}")
+            if event.outcome == MatchOutcome.VICTORY:
+                ms.result = MatchResult.VICTORY
+            else:
+                ms.result = MatchResult.DEFEAT
+            ms.result_source = ResultSource.OVERWOLF
+            if ms.ended_at is None:
+                ms.ended_at = event.timestamp
+            # If no MatchEndEvent arrives, outcome alone can trigger analysis
+            if not ms._analysis_triggered:
+                self._trigger_match_end()
+            return
+
+        if isinstance(event, MapUpdate):
+            ms.map_name = event.name
+            ms.map_code = event.code
+        elif isinstance(event, GameModeUpdate):
+            ms.mode = event.name
+            ms.mode_code = event.code
+        elif isinstance(event, GameTypeUpdate):
+            ms.game_type = event.game_type
+        elif isinstance(event, QueueTypeUpdate):
+            ms.queue_type = event.queue_type
+        elif isinstance(event, PseudoMatchIdUpdate):
+            ms.pseudo_match_id = event.pseudo_match_id
+        elif isinstance(event, RoundStartEvent):
+            ms.rounds.append(RoundInfo(started_at=event.timestamp))
+        elif isinstance(event, RoundEndEvent):
+            if ms.rounds:
+                ms.rounds[-1].ended_at = event.timestamp
+        elif isinstance(event, RosterUpdate):
+            self._handle_roster_update(event)
+
+    def _handle_roster_update(self, event: RosterUpdate) -> None:
+        """Process a single RosterUpdate into MatchState."""
+        ms = self._match_state
+        entry = event.entry
+        if not entry.player_name:
+            return  # empty slot (post-match clear or vacant)
+        is_new = entry.player_name.upper() not in ms.players
+        player = ms.get_or_create_player(entry.player_name)
+        player.battletag = entry.battlenet_tag
+        player.team = entry.team
+        player.is_local = entry.is_local
+        player.slot = event.slot
+
+        if is_new:
+            local_tag = " [LOCAL]" if entry.is_local else ""
+            _logger.info(f"Roster new player: {entry.player_name} ({entry.battlenet_tag}) "
+                         f"team={entry.team} slot={event.slot}{local_tag}")
+
+        # Resolve local team and derive team sides
+        if entry.is_local and ms._local_team != entry.team:
+            ms._local_team = entry.team
+            ms.resolve_team_sides()
+            _logger.info(f"Local team resolved: team={entry.team}")
+        elif player.team is not None and ms._local_team is not None:
+            from overwatchlooker.match_state import TeamSide
+            player.team_side = (
+                TeamSide.ALLY if player.team == ms._local_team
+                else TeamSide.ENEMY
+            )
+
+        # Stats
+        player.stats = StatsSnapshot(
+            kills=entry.kills,
+            deaths=entry.deaths,
+            assists=entry.assists,
+            damage=entry.damage,
+            healing=entry.healed,
+            mitigation=entry.mitigated,
+        )
+
+        # Hero swap detection
+        if entry.hero_name and entry.hero_name != "UNKNOWN":
+            from overwatchlooker.heroes import match_hero_name as _match_hero
+            resolved = _match_hero(entry.hero_name) or entry.hero_name.title()
+            current = player.current_hero
+            if current is None or _edit_distance(resolved.lower(), current.lower()) > 2:
+                player.hero_swaps.append(HeroSwap(
+                    hero=resolved,
+                    detected_at=event.timestamp,
+                    source=HeroSource.OVERWOLF_ROSTER,
+                    stats_at_detection=StatsSnapshot(
+                        kills=entry.kills, deaths=entry.deaths,
+                        assists=entry.assists, damage=entry.damage,
+                        healing=entry.healed, mitigation=entry.mitigated,
+                    ),
+                ))
+                if current is not None:
+                    _logger.info(f"Roster hero swap: {entry.player_name} "
+                                 f"{current} -> {entry.hero_name} "
+                                 f"(K={entry.kills} D={entry.deaths} A={entry.assists})")
+
+        # Role
+        if entry.hero_role:
+            try:
+                player.role = PlayerRole(entry.hero_role)
+            except ValueError:
+                pass
+
+        # Dump full state on first roster update with local player identified
+        if is_new and entry.is_local:
+            ms.dump_to_log("LocalPlayerRoster")
+
+    def _trigger_match_end(self) -> None:
+        """Snapshot MatchState, print summary, reset for next match."""
+        ms = self._match_state
+        if ms._analysis_triggered:
+            _logger.debug("Match end trigger skipped: already triggered")
+            return
+        # Skip if match state has no meaningful data (e.g. post-reset ghost events)
+        if not ms.players and ms.started_at is None:
+            _logger.debug("Match end trigger skipped: empty state")
+            return
+        # Debounce: ignore triggers within 5s of each other
+        now = time.monotonic()
+        if now - self._last_match_end_ts < 5.0:
+            _logger.debug("Match end trigger skipped: debounce")
+            return
+        self._last_match_end_ts = now
+
+        _logger.info(f"Match end triggered: map={ms.map_name} result={ms.result} "
+                     f"players={len(ms.players)} rounds={len(ms.rounds)} "
+                     f"source={ms.result_source}")
+        ms.dump_to_log("MatchEnd")
+        snapshot = ms.snapshot()
+
+        # Start cooldown
+        if self._tick_loop:
+            fps = self._tick_loop.fps
+            self._cooldown_until_tick = (
+                self._tick_loop._current_tick + int(fps * _POST_SUBMIT_COOLDOWN)
+            )
+
+        # Reset subtitle/chat state
+        if self._detector is not None:
+            self._detector.reset_match()
+        if self._chat_system is not None:
+            self._chat_system.reset_match()
+
+        # Reset match state for next match
+        self._match_state = MatchState()
+
+        # Print and emit in background thread
+        def _finalize():
+            summary = format_match_state(snapshot)
+            from overwatchlooker.display import print_analysis
+            print_analysis(summary)
+            self._ws_emit({"type": "match_complete", "data": {
+                "result": snapshot.result.value if snapshot.result else None,
+                "map": snapshot.map_name,
+                "mode": snapshot.mode,
+                "duration_ms": snapshot.duration,
+            }})
+            show_notification("OverwatchLooker",
+                              f"Match complete: {snapshot.result.value if snapshot.result else 'UNKNOWN'}")
+
+        threading.Thread(target=_finalize, daemon=True).start()
 
     def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str) -> None:
         """Store a valid Tab screenshot (called by TabCaptureSystem).
@@ -137,189 +342,95 @@ class App:
             _logger.debug(f"Tab ignored (post-detection cooldown): {filename}")
             return
         with self._lock:
-            self._valid_tabs.append((png_bytes, timestamp, filename))
-            if len(self._valid_tabs) > 2:
-                self._valid_tabs.pop(0)
-            tab_count = len(self._valid_tabs)
+            ms = self._match_state
+            ms.tab_screenshots.append(TabScreenshot(
+                png_bytes=png_bytes, sim_time=timestamp, filename=filename))
+            if len(ms.tab_screenshots) > 2:
+                ms.tab_screenshots.pop(0)
+            tab_count = len(ms.tab_screenshots)
         print_status(f"Tab screenshot saved: {filename}")
         self._ws_emit({"type": "tab_capture", "filename": filename,
                        "timestamp": timestamp, "count": tab_count})
 
     def store_hero_crop(self, name: str, crop: bytes) -> None:
-        """Store a hero panel crop (called by TabCaptureSystem)."""
+        """Store a hero panel crop into local player's hero_panels."""
         if self._in_post_detection_cooldown():
             return
         with self._lock:
-            if not any(_edit_distance(name.lower(), k.lower()) <= 2
-                       for k in self._hero_crops):
-                self._hero_crops[name] = crop
-                _logger.info(f"Stored hero crop: {name}")
-                self._ws_emit({"type": "hero_crop", "name": name})
+            ms = self._match_state
+            local = ms.local_player
+            if local is None:
+                # No local player known yet — create a placeholder
+                # (will be resolved when roster arrives)
+                all_panels = [hp for p in ms.players.values() for hp in p.hero_panels]
+                if any(_edit_distance(name.lower(), hp.hero_name.lower()) <= 2
+                       for hp in all_panels):
+                    _logger.debug(f"Hero crop dedup skip: {name}")
+                    return
+                # Store on a temporary _LOCAL_ player
+                player = ms.get_or_create_player("_LOCAL_")
+                player.hero_panels.append(HeroPanel(hero_name=name, crop_png=crop))
             else:
-                _logger.debug(f"Hero crop dedup skip: {name}")
+                if any(_edit_distance(name.lower(), hp.hero_name.lower()) <= 2
+                       for hp in local.hero_panels):
+                    _logger.debug(f"Hero crop dedup skip: {name}")
+                    return
+                local.hero_panels.append(HeroPanel(hero_name=name, crop_png=crop))
+            _logger.info(f"Stored hero crop: {name}")
+            self._ws_emit({"type": "hero_crop", "name": name})
 
     def _on_hero_switch(self, player: str, hero: str, sim_time: float) -> None:
         """Callback when a hero switch is detected in subtitles."""
+        ms = self._match_state
+        p = ms.get_or_create_player(player)
+        current = p.current_hero
+        if current is None or _edit_distance(hero.lower(), current.lower()) > 2:
+            p.hero_swaps.append(HeroSwap(
+                hero=hero,
+                detected_at=int(sim_time * 1000),
+                source=HeroSource.SUBTITLE_OCR,
+            ))
+            _logger.info(f"Subtitle hero switch: {player} -> {hero} (t={sim_time:.1f}s)")
+        else:
+            _logger.debug(f"Subtitle hero switch deduped: {player} -> {hero} (current={current})")
         self._ws_emit({"type": "hero_switch", "player": player,
                        "hero": hero, "time": sim_time})
 
     def _on_player_change(self, player: str, event: str, sim_time: float) -> None:
         """Callback when a player joins or leaves the game."""
+        _logger.info(f"Chat player change: {player} {event} (t={sim_time:.1f}s)")
+        ms = self._match_state
+        p = ms.get_or_create_player(player)
+        epoch_ms = int(sim_time * 1000)
+        if event == "joined":
+            p.joined_at = epoch_ms
+        elif event == "left":
+            p.left_at = epoch_ms
         self._ws_emit({"type": "player_change", "player": player,
                        "event": event, "time": sim_time})
 
     def _on_detected(self, result: str, detection_time: float = 0.0) -> None:
         """Immediate callback when VICTORY/DEFEAT is first detected."""
+        _logger.info(f"Subtitle detected: {result} (t={detection_time:.1f}s)")
         self._ws_emit({"type": "detection", "result": result, "time": detection_time})
-        show_notification("OverwatchLooker", f"{result} detected! Analyzing...")
-        if self._no_analysis:
-            print_status(f"Detected: {result} (analysis skipped)")
-        else:
-            print_status(f"Detected: {result}. Analyzing after delay...")
+        show_notification("OverwatchLooker", f"{result} detected!")
+        print_status(f"Detected: {result}.")
 
     def _on_detection(self, result: str, detection_time: float = 0.0) -> None:
-        """Delayed callback: start analysis after the tick-based delay has elapsed."""
-        if self._no_analysis:
-            return
-        # Start cooldown: ignore tab/crop events for 30s to prevent stale data leaking
-        if self._tick_loop:
-            fps = self._tick_loop.fps
-            self._cooldown_until_tick = (
-                self._tick_loop._current_tick + int(fps * _POST_SUBMIT_COOLDOWN)
-            )
-        with self._lock:
-            if self._analyzing:
-                print_status("Analysis already in progress, ignoring detection trigger.")
-                return
-            self._analyzing = True
-            hero_crops = dict(self._hero_crops)
-            self._hero_crops.clear()
-
-        # Grab hero map and history from subtitle listener before resetting
-        hero_map: dict[str, str] = {}
-        hero_history: dict[str, list[tuple[float, str]]] = {}
-        if self._detector is not None:
-            hero_map = self._detector.hero_map
-            hero_history = self._detector.hero_history
-            self._detector.reset_match()
-
-        player_changes: list[tuple[float, str, str]] = []
-        if self._chat_system is not None:
-            player_changes = self._chat_system.player_changes
-            self._chat_system.reset_match()
-
-        thread = threading.Thread(target=self._run_analysis,
-                                  args=(result, detection_time, hero_map, hero_history, hero_crops, player_changes), daemon=True)
-        thread.start()
-
-    def _run_analysis(self, detection_result: str, detection_time: float = 0.0,
-                      hero_map: dict[str, str] | None = None,
-                      hero_history: dict[str, list[tuple[float, str]]] | None = None,
-                      hero_crops: dict[str, bytes] | None = None,
-                      player_changes: list[tuple[float, str, str]] | None = None) -> None:
-        """Wait, then analyze last valid tab screenshot (fall back to previous if rejected)."""
-        try:
-            print_status(f"Analyzing {detection_result}...")
-            self._ws_emit({"type": "analyzing", "result": detection_result})
-
-            with self._lock:
-                tabs = list(self._valid_tabs)
-
-            if not tabs:
-                print_error("No valid Tab screenshot found. Press Tab during the scoreboard first.")
-                show_notification("OverwatchLooker", "No Tab screenshot to analyze.")
-                return
-
-            # Try most recent first, then fall back to previous
-            for i, (png_bytes, tab_time, filename) in enumerate(reversed(tabs)):
-                age = detection_time - tab_time
-                if age > SCREENSHOT_MAX_AGE_SECONDS:
-                    continue
-
-                is_fallback = i > 0
-                if is_fallback:
-                    time_diff = tabs[-1][1] - tab_time
-                    print_status(f"Latest screenshot rejected by analyzer. "
-                                 f"Falling back to previous ({time_diff:.0f}s older).")
-
-                print_status(f"Analyzing {filename} ({len(png_bytes)} bytes, "
-                             f"{age:.0f}s old) with {ANALYZER} backend...")
-
-                # Remove the final screenshot's hero from crops to avoid duplicate
-                crops_for_analyzer = dict(hero_crops) if hero_crops else {}
-                if crops_for_analyzer and has_hero_panel(png_bytes):
-                    final_crop = crop_hero_panel(png_bytes)
-                    final_hero = ocr_hero_name(final_crop)
-                    if final_hero:
-                        to_remove = [k for k in crops_for_analyzer
-                                     if _edit_distance(final_hero.lower(), k.lower()) <= 2]
-                        for k in to_remove:
-                            del crops_for_analyzer[k]
-                            _logger.info(f"Removed '{k}' from hero crops (matches final hero '{final_hero}')")
-
-                if crops_for_analyzer:
-                    _logger.info(f"Sending {len(crops_for_analyzer)} extra hero crops: {list(crops_for_analyzer.keys())}")
-
-                from overwatchlooker.analyzers import get_analyze_screenshot
-                analyze_screenshot = get_analyze_screenshot()
-                result = analyze_screenshot(png_bytes, audio_result=detection_result,
-                                            hero_crops=crops_for_analyzer or None)
-
-                if result.get("not_ow2_tab"):
-                    print_status("Analyzer rejected screenshot as not OW2 Tab.")
-                    continue
-                # Override UNKNOWN result with subtitle detection
-                if result.get("result") == "UNKNOWN" and detection_result:
-                    result["result"] = detection_result
-                # Merge hero_history + analyzer hero + extra_hero_stats into per-player heroes[]
-                from overwatchlooker.analyzers.common import merge_heroes, format_match
-                merge_heroes(result, hero_map=hero_map, hero_history=hero_history,
-                             player_changes=player_changes)
-                display_text = format_match(result, hero_map=hero_map,
-                                            hero_history=hero_history)
-
-                formatted = print_analysis(display_text)
-                self._ws_emit({"type": "analysis", "data": result})
-
-                # MCP upload
-                if self._use_mcp:
-                    from overwatchlooker.mcp_client import submit_match
-                    try:
-                        mcp_result = submit_match(result, png_bytes=png_bytes)
-                        match_id = mcp_result.get("match_id")
-                        print_status("Uploaded to MCP.")
-                        self._ws_emit({"type": "mcp_submitted",
-                                       "match_id": match_id})
-                    except Exception as e:
-                        print_error(f"MCP upload failed: {e}")
-
-                # Notification + clipboard (isolated so failures don't kill MCP)
-                if is_fallback:
-                    notif_msg = (f"{detection_result} — Used fallback screenshot "
-                                 f"({time_diff:.0f}s older, latest was rejected).")
-                else:
-                    notif_msg = detection_result
-                try:
-                    if self._use_telegram:
-                        from overwatchlooker.telegram import send_message
-                        if send_message(formatted):
-                            show_notification("OverwatchLooker", f"{notif_msg} — Sent to Telegram.")
-                        else:
-                            print_error("Failed to send to Telegram.")
-                    else:
-                        show_notification("OverwatchLooker", notif_msg)
-                except Exception as e:
-                    _logger.warning(f"Notification failed: {e}")
-                return
-
-            # All screenshots were rejected or too old
-            print_error("No usable Tab screenshot found.")
-            show_notification("OverwatchLooker", "All Tab screenshots rejected or too old.")
-        except Exception as e:
-            print_error(f"Analysis failed: {e}")
-        finally:
-            with self._lock:
-                self._analyzing = False
+        """Delayed callback: subtitle OCR detected VICTORY/DEFEAT — trigger match end."""
+        _logger.info(f"Subtitle detection trigger: {result} (t={detection_time:.1f}s)")
+        self._match_state.dump_to_log("SubtitleDetection")
+        ms = self._match_state
+        # Set result from subtitle if Overwolf hasn't already
+        if ms.result is None:
+            if result == "VICTORY":
+                ms.result = MatchResult.VICTORY
+            elif result == "DEFEAT":
+                ms.result = MatchResult.DEFEAT
+            ms.result_source = ResultSource.SUBTITLE
+        if ms.ended_at is None:
+            ms.ended_at = int(detection_time * 1000)
+        self._trigger_match_end()
 
     # ------------------------------------------------------------------
     # Engine lifecycle: polling for Overwatch window
@@ -426,12 +537,11 @@ class App:
         self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
 
         subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
-        detection_delay = int(fps * _AUDIO_ANALYSIS_DELAY)
         subtitle_system = SubtitleSystem(on_match=self._on_detection,
                                          on_detected=self._on_detected,
                                          on_hero_switch=self._on_hero_switch,
                                          transcript=self._use_transcript,
-                                         detection_delay_ticks=detection_delay)
+                                         detection_delay_ticks=0)
         self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
         self._detector = subtitle_system
         self._subtitle_system = subtitle_system
@@ -451,7 +561,7 @@ class App:
         tick_thread.start()
 
         print_status("Overwatch detected — capture engine started.")
-        self._ws_emit({"type": "state", "active": True, "analyzing": False})
+        self._ws_emit({"type": "state", "active": True})
 
     def _monitor_engine_health(self) -> None:
         """Check if the engine has faulted (e.g. OW closed)."""
@@ -462,7 +572,7 @@ class App:
             _logger.warning(f"Capture engine error: {err}")
             self._tear_down_engine()
             print_status("Overwatch closed. Waiting for reconnect...")
-            self._ws_emit({"type": "state", "active": True, "analyzing": False})
+            self._ws_emit({"type": "state", "active": True})
             if self._recording:
                 self._recording = False
                 self._ws_emit({"type": "state", "recording": False})
@@ -495,22 +605,7 @@ class App:
         if self._active:
             return
 
-        if ANALYZER == "anthropic":
-            from overwatchlooker.config import ANTHROPIC_API_KEY
-            if not ANTHROPIC_API_KEY:
-                print_error("ANALYZER=anthropic but ANTHROPIC_API_KEY is not set. "
-                            "Set it in .env or use a different analyzer.")
-                return
-
         self._active = True
-        if self._use_telegram:
-            from overwatchlooker.config import TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_CHANNEL
-            if TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_CHANNEL:
-                print_status(f"Telegram: ON (chat_id={TELEGRAM_CHANNEL})")
-            else:
-                print_error("Telegram: --tg flag set but TELEGRAM_API_ID, TELEGRAM_API_HASH, or TELEGRAM_CHANNEL missing in .env")
-        else:
-            print_status("Telegram: OFF")
 
         if self._replay_source:
             # Replay mode: use ReplayFrameSource/ReplayInputSource directly
@@ -531,12 +626,11 @@ class App:
             self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
 
             subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
-            detection_delay = int(fps * _AUDIO_ANALYSIS_DELAY)
             subtitle_system = SubtitleSystem(on_match=self._on_detection,
                                              on_detected=self._on_detected,
                                              on_hero_switch=self._on_hero_switch,
                                              transcript=self._use_transcript,
-                                             detection_delay_ticks=detection_delay)
+                                             detection_delay_ticks=0)
             self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
             self._detector = subtitle_system
             self._subtitle_system = subtitle_system
@@ -568,8 +662,8 @@ class App:
             self._poll_thread.start()
             detect_mode = "subtitle"
 
-        print_status(f"Listening (analyzer={ANALYZER}, detection={detect_mode}). Tab=screenshot.")
-        self._ws_emit({"type": "state", "active": True, "analyzing": False})
+        print_status(f"Listening (detection={detect_mode}). Tab=screenshot.")
+        self._ws_emit({"type": "state", "active": True})
 
     def _stop_listening(self) -> None:
         if not self._active:
@@ -594,36 +688,18 @@ class App:
         self._ws_emit({"type": "state", "active": False})
 
     def _on_submit_tab(self, result: str) -> None:
-        """Manually submit last tab screenshot with a given result."""
-        if self._tick_loop:
-            fps = self._tick_loop.fps
-            self._cooldown_until_tick = (
-                self._tick_loop._current_tick + int(fps * _POST_SUBMIT_COOLDOWN)
-            )
-        with self._lock:
-            if self._analyzing:
-                print_status("Analysis already in progress.")
-                return
-            self._analyzing = True
-            hero_crops = dict(self._hero_crops)
-            self._hero_crops.clear()
-
-        hero_map: dict[str, str] = {}
-        hero_history: dict[str, list[tuple[float, str]]] = {}
-        if self._detector is not None:
-            hero_map = self._detector.hero_map
-            hero_history = self._detector.hero_history
-            self._detector.reset_match()
-
-        player_changes: list[tuple[float, str, str]] = []
-        if self._chat_system is not None:
-            player_changes = self._chat_system.player_changes
-            self._chat_system.reset_match()
-
-        detection_time = self._tick_loop._current_tick / self._tick_loop.fps if self._tick_loop else 0.0
-        thread = threading.Thread(target=self._run_analysis,
-                                  args=(result, detection_time, hero_map, hero_history, hero_crops, player_changes), daemon=True)
-        thread.start()
+        """Manually submit with a given result — set result and trigger match end."""
+        _logger.info(f"Manual submit: {result}")
+        ms = self._match_state
+        if result == "VICTORY":
+            ms.result = MatchResult.VICTORY
+        elif result == "DEFEAT":
+            ms.result = MatchResult.DEFEAT
+        ms.result_source = ResultSource.SUBTITLE
+        if ms.ended_at is None:
+            now_ms = int(time.time() * 1000)
+            ms.ended_at = now_ms
+        self._trigger_match_end()
 
     def _on_submit_win(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         self._on_submit_tab("VICTORY")

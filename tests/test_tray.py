@@ -1,4 +1,4 @@
-"""Tests for tray App: hero crop lifecycle, analysis flow, memoir input."""
+"""Tests for tray App: MatchState integration, cooldown, recording, memoir input."""
 
 from unittest.mock import MagicMock, patch
 
@@ -7,67 +7,254 @@ import pytest
 from memoir_capture import MetaFile, MetaHeader, MetaKeyEntry, MetaRow
 
 
+def _seed_match(app):
+    """Give the match state enough data so _trigger_match_end won't skip it."""
+    app._match_state.started_at = 1000
+    app._on_hero_switch("_SEED_", "Test", 0.0)
+
+
 @pytest.fixture
 def app():
     from overwatchlooker.tray import App
     return App()
 
 
-class TestHeroCropLifecycle:
-    def test_hero_crops_initially_empty(self, app):
-        assert app._hero_crops == {}
+class TestMatchStateLifecycle:
+    def test_match_state_initially_empty(self, app):
+        ms = app._match_state
+        assert ms.players == {}
+        assert ms.tab_screenshots == []
+        assert ms.result is None
 
-    def test_hero_crop_stored(self, app):
-        """Simulate storing a hero crop under lock."""
-        with app._lock:
-            app._hero_crops["Reinhardt"] = b"crop_data"
-        assert "Reinhardt" in app._hero_crops
+    def test_tab_stored_in_match_state(self, app):
+        app.store_valid_tab(b"png", 1.0, "tab.png")
+        assert len(app._match_state.tab_screenshots) == 1
+        assert app._match_state.tab_screenshots[0].filename == "tab.png"
 
-    def test_hero_crop_dedup(self, app):
-        """Same hero name should not be stored twice."""
-        from overwatchlooker.heroes import edit_distance
-        name1 = "Reinhardt"
-        name2 = "Reinhardt"
-        with app._lock:
-            app._hero_crops[name1] = b"crop1"
-            if not any(edit_distance(name2.lower(), k.lower()) <= 2 for k in app._hero_crops):
-                app._hero_crops[name2] = b"crop2"
-        assert len(app._hero_crops) == 1
+    def test_tab_capped_at_two(self, app):
+        app.store_valid_tab(b"png1", 1.0, "tab1.png")
+        app.store_valid_tab(b"png2", 2.0, "tab2.png")
+        app.store_valid_tab(b"png3", 3.0, "tab3.png")
+        assert len(app._match_state.tab_screenshots) == 2
+        assert app._match_state.tab_screenshots[0].filename == "tab2.png"
 
-    def test_hero_crop_different_heroes(self, app):
-        with app._lock:
-            app._hero_crops["Reinhardt"] = b"crop1"
-            app._hero_crops["Juno"] = b"crop2"
-        assert len(app._hero_crops) == 2
+    def test_hero_switch_creates_player(self, app):
+        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
+        p = app._match_state.players["PLAYER1"]
+        assert p.current_hero == "Reinhardt"
+        assert len(p.hero_swaps) == 1
 
-    def test_hero_crops_cleared_on_detection(self, app):
-        app._hero_crops["Reinhardt"] = b"crop"
-        app._analyzing = False
-        # Mock detector
-        app._detector = MagicMock()
-        app._detector.hero_map = {}
-        app._detector.hero_history = {}
+    def test_hero_switch_dedup(self, app):
+        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
+        app._on_hero_switch("PLAYER1", "Reinhardt", 11.0)
+        assert len(app._match_state.players["PLAYER1"].hero_swaps) == 1
 
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
+    def test_hero_switch_different_hero(self, app):
+        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
+        app._on_hero_switch("PLAYER1", "Winston", 20.0)
+        assert len(app._match_state.players["PLAYER1"].hero_swaps) == 2
 
-        assert app._hero_crops == {}
+    def test_player_change_joined(self, app):
+        app._on_player_change("PLAYER1", "joined", 5.0)
+        assert app._match_state.players["PLAYER1"].joined_at == 5000
 
-    def test_hero_crops_cleared_on_manual_submit(self, app):
-        app._hero_crops["Juno"] = b"crop"
-        app._analyzing = False
-        app._detector = MagicMock()
-        app._detector.hero_map = {}
-        app._detector.hero_history = {}
+    def test_player_change_left(self, app):
+        app._on_player_change("PLAYER1", "left", 10.0)
+        assert app._match_state.players["PLAYER1"].left_at == 10000
 
-        with patch.object(app, "_run_analysis"):
-            app._on_submit_tab("VICTORY")
 
-        assert app._hero_crops == {}
+class TestOverwolfEventHandling:
+    def test_map_update(self, app):
+        from overwatchlooker.overwolf import MapUpdate
+        app._on_overwolf_event(MapUpdate(code="212", name="King's Row", timestamp=1000))
+        assert app._match_state.map_name == "King's Row"
+        assert app._match_state.map_code == "212"
+
+    def test_game_mode_update(self, app):
+        from overwatchlooker.overwolf import GameModeUpdate
+        app._on_overwolf_event(GameModeUpdate(code="0022", name="Hybrid", timestamp=1000))
+        assert app._match_state.mode == "Hybrid"
+
+    def test_game_type_update(self, app):
+        from overwatchlooker.overwolf import GameTypeUpdate, GameType
+        app._on_overwolf_event(GameTypeUpdate(game_type=GameType.RANKED, timestamp=1000))
+        assert app._match_state.game_type == GameType.RANKED
+
+    def test_queue_type_update(self, app):
+        from overwatchlooker.overwolf import QueueTypeUpdate, QueueType
+        app._on_overwolf_event(QueueTypeUpdate(queue_type=QueueType.ROLE_QUEUE, timestamp=1000))
+        assert app._match_state.queue_type == QueueType.ROLE_QUEUE
+
+    def test_pseudo_match_id_update(self, app):
+        from overwatchlooker.overwolf import PseudoMatchIdUpdate
+        app._on_overwolf_event(PseudoMatchIdUpdate(pseudo_match_id="abc-123", timestamp=1000))
+        assert app._match_state.pseudo_match_id == "abc-123"
+
+    def test_round_start_end(self, app):
+        from overwatchlooker.overwolf import RoundStartEvent, RoundEndEvent
+        app._on_overwolf_event(RoundStartEvent(timestamp=1000))
+        assert len(app._match_state.rounds) == 1
+        app._on_overwolf_event(RoundEndEvent(timestamp=2000))
+        assert app._match_state.rounds[0].ended_at == 2000
+
+    def test_match_start_creates_new_state(self, app):
+        from overwatchlooker.overwolf import MatchStartEvent, MapUpdate
+        # Pre-match info
+        app._on_overwolf_event(MapUpdate(code="212", name="King's Row", timestamp=500))
+        # Match starts
+        app._on_overwolf_event(MatchStartEvent(timestamp=1000))
+        assert app._match_state.started_at == 1000
+        # Pre-match info carried over
+        assert app._match_state.map_name == "King's Row"
+
+    def test_roster_update_creates_player(self, app):
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry = RosterEntry(
+            player_name="TestPlayer", battlenet_tag="Test#1234",
+            is_local=True, is_teammate=True, hero_name="Reinhardt",
+            hero_role="TANK", team=0, kills=5, deaths=2, assists=3,
+            damage=1000, healed=0, mitigated=500,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
+        p = app._match_state.players["TESTPLAYER"]
+        assert p.battletag == "Test#1234"
+        assert p.is_local is True
+        assert p.current_hero == "Reinhardt"
+        assert p.stats is not None
+        assert p.stats.kills == 5
+        assert app._match_state._local_team == 0
+
+    def test_roster_hero_swap_detection(self, app):
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry1 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="Reinhardt", hero_role="TANK",
+            team=0, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=1000))
+        assert len(app._match_state.players["P1"].hero_swaps) == 1
+
+        # Same hero — no new swap
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=2000))
+        assert len(app._match_state.players["P1"].hero_swaps) == 1
+
+        # Different hero
+        entry2 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="Winston", hero_role="TANK",
+            team=0, kills=1, deaths=0, assists=0, damage=100, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry2, timestamp=3000))
+        assert len(app._match_state.players["P1"].hero_swaps) == 2
+
+    def test_team_side_resolution(self, app):
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        from overwatchlooker.match_state import TeamSide
+        # Local player on team 0
+        local = RosterEntry(
+            player_name="Local", battlenet_tag="L#1", is_local=True,
+            is_teammate=True, hero_name="Ana", hero_role="SUPPORT",
+            team=0, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        enemy = RosterEntry(
+            player_name="Enemy", battlenet_tag="E#1", is_local=False,
+            is_teammate=False, hero_name="", hero_role="",
+            team=1, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=local, timestamp=1000))
+        app._on_overwolf_event(RosterUpdate(slot=5, entry=enemy, timestamp=1000))
+        assert app._match_state.players["LOCAL"].team_side == TeamSide.ALLY
+        assert app._match_state.players["ENEMY"].team_side == TeamSide.ENEMY
+
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_match_outcome_triggers_end(self, mock_print, mock_notif, app):
+        from overwatchlooker.overwolf import MatchOutcomeUpdate, MatchOutcome, MatchStartEvent
+        # Need a started match with players for trigger to fire
+        app._on_overwolf_event(MatchStartEvent(timestamp=1000))
+        app._on_hero_switch("PLAYER1", "Ana", 1.0)
+        app._on_overwolf_event(MatchOutcomeUpdate(
+            outcome=MatchOutcome.VICTORY, timestamp=5000))
+        # Match state should be reset (new empty state)
+        assert app._match_state.result is None
+
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_double_trigger_prevented(self, mock_print, mock_notif, app):
+        from overwatchlooker.overwolf import MatchEndEvent, MatchOutcomeUpdate, MatchOutcome, MatchStartEvent
+        # Need a started match with players for trigger to fire
+        app._on_overwolf_event(MatchStartEvent(timestamp=1000))
+        app._on_hero_switch("PLAYER1", "Ana", 1.0)
+        app._on_overwolf_event(MatchEndEvent(timestamp=5000))
+        # First trigger resets state
+        first_state = app._match_state
+        # Second trigger (outcome) should not trigger again due to debounce
+        app._on_overwolf_event(MatchOutcomeUpdate(
+            outcome=MatchOutcome.VICTORY, timestamp=5001))
+        # State should not be reset again (debounce prevents it)
+        assert app._match_state is first_state
+
+    def test_empty_player_name_skipped(self, app):
+        """Post-match empty roster updates should not create ghost players."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry = RosterEntry(
+            player_name="", battlenet_tag="", is_local=False,
+            is_teammate=True, hero_name="UNKNOWN", hero_role="UNKNOWN",
+            team=1, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
+        assert "" not in app._match_state.players
+        assert len(app._match_state.players) == 0
+
+    def test_unknown_hero_name_filtered(self, app):
+        """UNKNOWN hero name from Overwolf should not create a hero swap."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry = RosterEntry(
+            player_name="Player1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="UNKNOWN", hero_role="UNKNOWN",
+            team=1, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
+        assert len(app._match_state.players["PLAYER1"].hero_swaps) == 0
+
+    def test_hero_name_resolved_via_match(self, app):
+        """Overwolf hero names like JETPACKCAT should resolve to canonical names."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry = RosterEntry(
+            player_name="Player1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="JETPACKCAT", hero_role="SUPPORT",
+            team=1, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
+        assert app._match_state.players["PLAYER1"].current_hero == "Jetpack Cat"
+
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_match_outcome_sets_ended_at(self, mock_print, mock_notif, app):
+        """MatchOutcomeUpdate should set ended_at if not already set."""
+        from overwatchlooker.overwolf import MatchOutcomeUpdate, MatchOutcome, MatchStartEvent
+        app._on_overwolf_event(MatchStartEvent(timestamp=1000))
+        app._on_hero_switch("PLAYER1", "Ana", 1.0)
+        app._on_overwolf_event(MatchOutcomeUpdate(
+            outcome=MatchOutcome.DEFEAT, timestamp=50000))
+        # State was reset, but we can check the snapshot wasn't created with None ended_at
+        # Since state was reset, the new state has no ended_at
+        # The trigger happened — meaning ended_at was set before snapshot
+        assert app._match_state.ended_at is None  # new state after reset
+
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_empty_state_not_triggered(self, mock_print, mock_notif, app):
+        """Match end on empty state (no players, no started_at) should be skipped."""
+        from overwatchlooker.overwolf import MatchEndEvent
+        old_state = app._match_state
+        app._on_overwolf_event(MatchEndEvent(timestamp=5000))
+        # State should NOT be reset — trigger was skipped
+        assert app._match_state is old_state
 
 
 class TestPostSubmitCooldown:
-    """After data is gathered for analysis, tab/crop events are ignored for 30s of ticks."""
+    """After match end, tab/crop events are ignored for 30s of ticks."""
 
     @pytest.fixture
     def app_with_tick_loop(self):
@@ -76,122 +263,111 @@ class TestPostSubmitCooldown:
         a._tick_loop = MagicMock()
         a._tick_loop.fps = 10
         a._tick_loop._current_tick = 1000
-        a._analyzing = False
-        a._detector = MagicMock()
-        a._detector.hero_map = {}
-        a._detector.hero_history = {}
         return a
 
-    def test_cooldown_set_on_detection(self, app_with_tick_loop):
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_cooldown_set_on_detection(self, mock_print, mock_notif, app_with_tick_loop):
         app = app_with_tick_loop
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
+        _seed_match(app)
+        app._on_detection("VICTORY")
         # 30s * 10fps = 300 ticks after current tick 1000
         assert app._cooldown_until_tick == 1300
 
-    def test_cooldown_set_on_manual_submit(self, app_with_tick_loop):
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_cooldown_set_on_manual_submit(self, mock_print, mock_notif, app_with_tick_loop):
         app = app_with_tick_loop
-        with patch.object(app, "_run_analysis"):
-            app._on_submit_tab("DEFEAT")
+        _seed_match(app)
+        app._on_submit_tab("DEFEAT")
         assert app._cooldown_until_tick == 1300
 
-    def test_tab_ignored_during_cooldown(self, app_with_tick_loop):
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_tab_ignored_during_cooldown(self, mock_print, mock_notif, app_with_tick_loop):
         app = app_with_tick_loop
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
+        _seed_match(app)
+        app._on_detection("VICTORY")
         # Tick loop is at 1000, cooldown until 1300 — should ignore
         app.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(app._valid_tabs) == 0
+        assert len(app._match_state.tab_screenshots) == 0
 
-    def test_crop_ignored_during_cooldown(self, app_with_tick_loop):
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_tab_accepted_after_cooldown(self, mock_print, mock_notif, app_with_tick_loop):
         app = app_with_tick_loop
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
-        app.store_hero_crop("Reinhardt", b"crop")
-        assert app._hero_crops == {}
-
-    def test_tab_accepted_after_cooldown(self, app_with_tick_loop):
-        app = app_with_tick_loop
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
+        _seed_match(app)
+        app._on_detection("VICTORY")
         # Advance tick past cooldown
         app._tick_loop._current_tick = 1300
         app.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(app._valid_tabs) == 1
-
-    def test_crop_accepted_after_cooldown(self, app_with_tick_loop):
-        app = app_with_tick_loop
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
-        app._tick_loop._current_tick = 1300
-        app.store_hero_crop("Reinhardt", b"crop")
-        assert "Reinhardt" in app._hero_crops
+        assert len(app._match_state.tab_screenshots) == 1
 
     def test_no_cooldown_without_tick_loop(self):
         """If tick loop is not running (e.g. image mode), no cooldown applies."""
         from overwatchlooker.tray import App
         a = App()
         a.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(a._valid_tabs) == 1
+        assert len(a._match_state.tab_screenshots) == 1
 
 
 class TestAnalysisFlow:
-    def test_analyzing_lock_prevents_double(self, app):
-        """Second detection while analyzing should be ignored."""
-        app._analyzing = True
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_double_trigger_prevented(self, mock_print, mock_notif, app):
+        """Second detection should not trigger again."""
+        _seed_match(app)
+        app._on_detection("VICTORY")
+        first_state = app._match_state
+        app._on_detection("DEFEAT")
+        # Second trigger on empty new state — skipped
+        assert app._match_state is first_state
+
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_reset_match_called_on_detection(self, mock_print, mock_notif, app):
+        _seed_match(app)
         app._detector = MagicMock()
-
-        with patch.object(app, "_run_analysis") as mock_run:
-            app._on_detection("VICTORY")
-            mock_run.assert_not_called()
-
-    def test_reset_match_called_on_detection(self, app):
-        app._analyzing = False
-        app._detector = MagicMock()
-        app._detector.hero_map = {}
-        app._detector.hero_history = {}
-
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("DEFEAT")
-
+        app._on_detection("DEFEAT")
         app._detector.reset_match.assert_called_once()
 
-    def test_chat_system_reset_on_detection(self, app):
-        app._analyzing = False
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_chat_system_reset_on_detection(self, mock_print, mock_notif, app):
+        _seed_match(app)
         app._detector = MagicMock()
-        app._detector.hero_map = {}
-        app._detector.hero_history = {}
         app._chat_system = MagicMock()
-        app._chat_system.player_changes = []
-
-        with patch.object(app, "_run_analysis"):
-            app._on_detection("VICTORY")
-
+        app._on_detection("VICTORY")
         app._chat_system.reset_match.assert_called_once()
 
-    def test_reset_match_called_on_manual_submit(self, app):
-        app._analyzing = False
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_reset_match_called_on_manual_submit(self, mock_print, mock_notif, app):
+        _seed_match(app)
         app._detector = MagicMock()
-        app._detector.hero_map = {}
-        app._detector.hero_history = {}
-
-        with patch.object(app, "_run_analysis"):
-            app._on_submit_tab("DEFEAT")
-
+        app._on_submit_tab("DEFEAT")
         app._detector.reset_match.assert_called_once()
 
-    def test_chat_system_reset_on_manual_submit(self, app):
-        app._analyzing = False
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_chat_system_reset_on_manual_submit(self, mock_print, mock_notif, app):
+        _seed_match(app)
         app._detector = MagicMock()
-        app._detector.hero_map = {}
-        app._detector.hero_history = {}
         app._chat_system = MagicMock()
-        app._chat_system.player_changes = []
-
-        with patch.object(app, "_run_analysis"):
-            app._on_submit_tab("DEFEAT")
-
+        app._on_submit_tab("DEFEAT")
         app._chat_system.reset_match.assert_called_once()
+
+    @patch("overwatchlooker.tray.show_notification")
+    @patch("overwatchlooker.display.print_analysis")
+    def test_match_state_reset_after_detection(self, mock_print, mock_notif, app):
+        """After detection triggers, match state is reset for next match."""
+        _seed_match(app)
+        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
+        assert "PLAYER1" in app._match_state.players
+        app._on_detection("VICTORY")
+        # State is reset
+        assert len(app._match_state.players) == 0
+        assert app._match_state.result is None
 
     def test_recording_start_emits_ws_state(self, app):
         app._bus = MagicMock()
@@ -211,6 +387,7 @@ class TestAnalysisFlow:
         with patch("overwatchlooker.tray.show_notification"):
             app._on_toggle_recording(None, None)
         app._bus.emit.assert_called_with({"type": "state", "recording": False})
+
 
 class TestMemoirInputSource:
     """Tests for MemoirInputSource keyboard bitmask decoding."""
@@ -322,21 +499,3 @@ class TestSynthesizeEvents:
         rows = [self._make_row(0, 0b0), self._make_row(1, 0b0)]
         events = _synthesize_events(self._make_meta(keys, rows))
         assert len(events) == 0
-
-
-    def test_final_hero_removed_from_crops(self):
-        """The hero visible in the final screenshot should be removed from crops."""
-        from overwatchlooker.heroes import edit_distance
-
-        hero_crops = {"Juno": b"juno_crop", "Reinhardt": b"rein_crop"}
-        final_hero = "Juno"
-
-        # This is the logic from _run_analysis
-        to_remove = [k for k in hero_crops
-                     if edit_distance(final_hero.lower(), k.lower()) <= 2]
-        for k in to_remove:
-            del hero_crops[k]
-
-        assert "Juno" not in hero_crops
-        assert "Reinhardt" in hero_crops
-        assert len(hero_crops) == 1

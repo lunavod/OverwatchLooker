@@ -89,6 +89,23 @@ class TestRosterEntry:
         assert entry.kills == 0
         assert entry.damage == 0.0
 
+    def test_null_stat_fields(self):
+        """Overwolf sometimes sends null for stat fields mid-match."""
+        raw = json.dumps({
+            "player_name": "TEST", "battlenet_tag": "Test#1",
+            "is_local": False, "is_teammate": True,
+            "hero_name": None, "hero_role": None,
+            "team": 1, "kills": None, "deaths": None, "assists": None,
+            "damage": None, "healed": None, "mitigated": None,
+        })
+        entry = RosterEntry.from_json(raw)
+        assert entry.hero_name == ""
+        assert entry.hero_role == ""
+        assert entry.kills == 0
+        assert entry.deaths == 0
+        assert entry.damage == 0.0
+        assert entry.healed == 0.0
+
 
 # ---------------------------------------------------------------------------
 # _parse_message — game_status
@@ -206,6 +223,16 @@ class TestParseInfoUpdates:
         assert isinstance(events[0], GameModeUpdate)
         assert events[0].code == "0023"
         assert events[0].name == "Control"
+
+    def test_game_mode_without_leading_zeros(self):
+        """Overwolf sometimes sends mode code without leading zeros."""
+        events = _parse_message({"type": "info_update", "data": {
+            "info": {"game_info": {"game_mode": "21"}},
+            "feature": "game_info"
+        }, "timestamp": 100})
+        assert isinstance(events[0], GameModeUpdate)
+        assert events[0].code == "21"
+        assert events[0].name == "Escort"
 
     def test_game_mode_unknown(self):
         events = _parse_message({"type": "info_update", "data": {
