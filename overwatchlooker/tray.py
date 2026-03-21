@@ -331,6 +331,7 @@ class App:
                 "rank_min": snapshot.rank_min or None,
                 "rank_max": snapshot.rank_max or None,
                 "is_wide_match": snapshot.is_wide_match,
+                "hero_bans": snapshot.hero_bans or None,
             }})
             show_notification("OverwatchLooker",
                               f"Match complete: {snapshot.result.value if snapshot.result else 'UNKNOWN'}")
@@ -342,7 +343,7 @@ class App:
         try:
             import cv2
             import numpy as np
-            from overwatchlooker.hero_panel import read_hero_panel, detect_rank_range
+            from overwatchlooker.hero_panel import read_hero_panel, detect_rank_range, detect_hero_bans
 
             local = snapshot.local_player
 
@@ -386,6 +387,11 @@ class App:
                         snapshot.is_wide_match = rank.is_wide
                         _logger.info(f"Rank: {rank.min_rank} - {rank.max_rank} "
                                      f"(wide={rank.is_wide})")
+
+                # Hero bans
+                bans = detect_hero_bans(img)
+                if bans:
+                    snapshot.hero_bans = bans
 
         except Exception as e:
             _logger.warning(f"Snapshot analysis failed: {e}")

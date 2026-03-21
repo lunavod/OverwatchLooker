@@ -142,6 +142,9 @@ class MatchState:
     rank_max: str = ""       # e.g. "Gold 1"
     is_wide_match: bool | None = None
 
+    # Hero bans (from tab screenshot template matching)
+    hero_bans: list[str] = field(default_factory=list)
+
     # From Tab capture — one per hero (latest with visible panel), plus latest raw for rank
     hero_tabs: dict[str, HeroTabCapture] = field(default_factory=dict)  # hero_name -> capture
     latest_tab: TabScreenshot | None = None  # most recent tab screenshot (for rank detection)
@@ -255,6 +258,7 @@ class MatchState:
             "rank_min": self.rank_min or None,
             "rank_max": self.rank_max or None,
             "is_wide_match": self.is_wide_match,
+            "hero_bans": self.hero_bans or None,
             "local_team": self._local_team,
             "hero_tabs": {name: {"hero": c.hero_name, "tick": c.tick, "file": c.filename}
                          for name, c in self.hero_tabs.items()},
@@ -349,6 +353,10 @@ def format_match_state(match: MatchState) -> str:
         if match.is_wide_match:
             rank_str += " (WIDE)"
         lines.append(rank_str)
+
+    # Hero bans
+    if match.hero_bans:
+        lines.append(f"Bans: {', '.join(match.hero_bans)}")
 
     # Rounds
     if match.rounds:

@@ -16,7 +16,9 @@ import numpy as np
 _logger = logging.getLogger("overwatchlooker")
 
 _MODELS_DIR = Path(__file__).parent / "models"
-_RANK_ASSETS_DIR = _MODELS_DIR / "rank_assets"
+_ASSETS_DIR = Path(__file__).parent / "assets"
+_RANK_ASSETS_DIR = _ASSETS_DIR / "ranks"
+_HERO_ASSETS_DIR = _ASSETS_DIR / "heroes"
 
 # Lazy-loaded models
 _labels_model = None
@@ -422,3 +424,84 @@ def detect_rank_range(img: np.ndarray) -> RankRange | None:
 
     _logger.info(f"Rank detected: {min_str} - {max_str} (wide={is_wide})")
     return RankRange(min_rank=min_str, max_rank=max_str, is_wide=is_wide)
+
+
+# ---------------------------------------------------------------------------
+# Hero ban detection
+# ---------------------------------------------------------------------------
+
+_hero_templates: dict[str, np.ndarray] | None = None
+
+
+def _hero_to_filename(name: str) -> str:
+    """Convert heroes.txt name to asset filename stem."""
+    return name.replace(".", "").replace(":", "").replace(" ", "_")
+
+
+def _load_hero_templates() -> dict[str, np.ndarray]:
+    """Load hero portrait templates (inner 70%, BGR)."""
+    global _hero_templates
+    if _hero_templates is not None:
+        return _hero_templates
+
+    from overwatchlooker.heroes import ALL_HEROES
+
+    _hero_templates = {}
+    for hero in ALL_HEROES:
+        fname = _hero_to_filename(hero)
+        path = _HERO_ASSETS_DIR / f"{fname}.png"
+        if not path.exists():
+            continue
+        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            continue
+        th, tw = raw.shape[:2]
+        # Crop inner 70% (remove 15% from each edge)
+        m = int(th * 0.15)
+        inner = raw[m:th - m, m:tw - m, :3]  # BGR only, no alpha
+        _hero_templates[hero] = inner
+
+    _logger.info(f"Loaded {len(_hero_templates)} hero portrait templates")
+    return _hero_templates
+
+
+def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
+    """Detect banned heroes from the top bar of a tab screenshot.
+
+    Returns a list of hero names (Title Case, matching heroes.txt).
+    """
+    templates = _load_hero_templates()
+    h, w = img.shape[:2]
+
+    # Search top 6%, center portion (bans are in the top bar, center-left)
+    roi = img[:int(h * 0.06), int(w * 0.15):int(w * 0.55)]
+    rh, rw = roi.shape[:2]
+
+    bans: list[tuple[str, float, int]] = []  # hero, score, x
+
+    for hero, tmpl in templates.items():
+        th, tw = tmpl.shape[:2]
+        best_val = -1.0
+        best_x = 0
+
+        for scale in np.arange(0.2, 0.6, 0.02):
+            sw, sh = int(tw * scale), int(th * scale)
+            if sw > rw or sh > rh or sw < 10 or sh < 10:
+                continue
+            resized = cv2.resize(tmpl, (sw, sh))
+            result = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+            _, mv, _, ml = cv2.minMaxLoc(result)
+            if mv > best_val:
+                best_val = mv
+                best_x = ml[0]
+
+        if best_val >= threshold:
+            bans.append((hero, best_val, best_x))
+
+    # Sort by x position (left to right)
+    bans.sort(key=lambda b: b[2])
+    result = [hero for hero, _, _ in bans]
+
+    if result:
+        _logger.info(f"Hero bans detected: {result}")
+    return result

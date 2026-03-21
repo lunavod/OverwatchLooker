@@ -22,6 +22,7 @@ wheels/
 !tests/fixtures/*.png
 !overwatchlooker/ranks.png
 !overwatchlooker/models/**/*.png
+!overwatchlooker/assets/**/*.png
 
 # Logs
 *.log
