@@ -27,10 +27,16 @@ _values_model = None
 
 def _suppress_paddle_warnings():
     """Suppress noisy paddle/paddlex warnings during model loading."""
+    import os
     import warnings
+    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+    os.environ["GLOG_minloglevel"] = "2"  # suppress C++ INFO/WARNING
     warnings.filterwarnings("ignore", category=UserWarning)
     warnings.filterwarnings("ignore", category=DeprecationWarning)
-    for name in ("paddle", "paddlex", "paddleocr"):
+    warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
+    warnings.filterwarnings("ignore", message=".*ccache.*")
+    for name in ("paddle", "paddlex", "paddleocr", "urllib3", "requests",
+                 "chardet", "charset_normalizer"):
         logging.getLogger(name).setLevel(logging.ERROR)
 
 
@@ -62,6 +68,7 @@ def _get_values_model():
 
 def preload_models():
     """Load OCR models eagerly. Call at startup to avoid delay on first match."""
+    _suppress_paddle_warnings()
     _logger.info("Preloading OCR models...")
     _get_values_model()
     _get_labels_model()
