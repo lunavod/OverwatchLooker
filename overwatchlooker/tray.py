@@ -114,11 +114,21 @@ class App:
 
     @staticmethod
     def _preload_models() -> None:
+        import io
+        import os
+        import sys
+        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+        os.environ["GLOG_minloglevel"] = "2"
+        # Redirect stderr to suppress C-level noise from paddle init
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
         try:
             from overwatchlooker.hero_panel import preload_models
             preload_models()
         except Exception as e:
             _logger.warning(f"OCR model preload failed: {e}")
+        finally:
+            sys.stderr = old_stderr
 
     def _register_commands(self, bus: EventBus) -> None:
         """Register command handlers on the event bus."""
