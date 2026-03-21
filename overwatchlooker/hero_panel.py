@@ -15,17 +15,6 @@ import numpy as np
 
 _logger = logging.getLogger("overwatchlooker")
 
-# Suppress paddle noise before any paddle imports
-import os as _os
-_os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-_os.environ.setdefault("GLOG_minloglevel", "2")
-
-import warnings as _warnings
-_warnings.filterwarnings("ignore", category=UserWarning)
-_warnings.filterwarnings("ignore", category=DeprecationWarning)
-_warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
-_warnings.filterwarnings("ignore", message=".*ccache.*")
-
 _MODELS_DIR = Path(__file__).parent / "models"
 _ASSETS_DIR = Path(__file__).parent / "assets"
 _RANK_ASSETS_DIR = _ASSETS_DIR / "ranks"
@@ -553,8 +542,8 @@ def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
 
     # Sort by x position (left to right)
     bans.sort(key=lambda b: b[2])
-    result = [hero for hero, _, _ in bans]
+    banned_heroes = [hero for hero, _, _ in bans]
 
-    if result:
-        _logger.info(f"Hero bans detected: {result}")
-    return result
+    if banned_heroes:
+        _logger.info(f"Hero bans detected: {banned_heroes}")
+    return banned_heroes

@@ -15,19 +15,8 @@ uv sync
 Create a `.env` file:
 
 ```env
-# Analyzer backend: "codex" (default) or "anthropic"
-ANALYZER=codex
-
-# Required for Anthropic backend (if using ANALYZER=anthropic)
-ANTHROPIC_API_KEY=sk-ant-...
-
 # Optional: player identity (improves self-player detection)
 OVERWATCH_USERNAME=LUNAVOD
-
-# Optional: Telegram integration (Telethon user client)
-TELEGRAM_API_ID=...
-TELEGRAM_API_HASH=...
-TELEGRAM_CHANNEL=...   # chat ID (e.g. -5033067937)
 
 # Optional: MCP server for match data storage
 MCP_URL=https://your-mcp-server.example.com/mcp
@@ -59,66 +48,54 @@ Tray menu (right-click icon):
 
 Press **Ctrl+C** in the terminal to exit.
 
-### Image file mode
-
-```bash
-uv run python main.py screenshot.png
-uv run python main.py screenshot.png --clean    # bypass cache, re-analyze
-uv run python main.py screenshot.png --win      # hint result as VICTORY
-uv run python main.py screenshot.png --loss     # hint result as DEFEAT
-uv run python main.py screenshot.png --tg       # send to Telegram
-```
-
-Analyzes a saved screenshot directly. Results are cached on disk (`cache/`) and reused on subsequent runs unless `--clean` is passed.
-
 ### Replay mode
 
 ```bash
 uv run python main.py --replay recordings/2026-03-07_21-00-39
-uv run python main.py --replay recordings/2026-03-07_21-00-39/recording.mp4  # direct .mp4 path
-uv run python main.py --replay recordings/2026-03-07_21-00-39 --no-analysis  # skip LLM
+uv run python main.py --replay recordings/2026-03-07_21-00-39/recording.mp4
 ```
 
-Replays a previously recorded session at max speed, running the full detection and analysis pipeline as if it were live. Accepts a recording directory or a direct `.mp4` file path. Useful for testing and debugging.
+Replays a previously recorded session at max speed, running the full detection pipeline as if it were live. Useful for testing changes without playing a match.
 
 ### CLI flags
 
 | Flag | Description |
 |---------|-------------|
-| `--analyzer` | Override analyzer backend (`anthropic` or `codex`) |
-| `--tg` | Send results to Telegram instead of clipboard |
-| `--mcp` | Upload structured match data to the MCP server |
-| `--clean` | Bypass disk cache and re-analyze from scratch |
-| `--backfill` | Mark match as backfilled when uploading to MCP |
+| `--overwolf` | Start Overwolf GEP receiver (accepts OverwatchListener connections on port 28025) |
+| `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
 | `--transcript` | Log subtitle OCR results to `transcripts/` folder |
 | `--replay` | Replay a recording directory or `.mp4` file |
-| `--no-analysis` | Skip LLM analysis on detection (useful for testing replays) |
-| `--win` | Hint that the match result is VICTORY |
-| `--loss` | Hint that the match result is DEFEAT |
-| `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
-| `--overwolf` | Start Overwolf GEP receiver (accepts OverwatchListener connections on port 28025) |
 
 ## Output format
 
 ```
 ═══ MATCH COMPLETE ═══
-Map: Havana | Escort | Unranked | Role Queue
+Map: Ilios | Control | Competitive | Role Queue
 Result: VICTORY | Duration: 9:30
-Rounds: 1 (9:30)
+Rank: Bronze 2 — Gold 1 (WIDE)
+Bans: Mercy, Symmetra, Vendetta, Zarya
+Rounds: 2 (4:12, 5:18)
 
 ── ALLY (Team 1) ──
-  TANK  lunavod#21722        Reinhardt -> Ramattra (1:11)    24/5/2   9483 dmg  441 heal  4732 mit
-  DAMAGE bexest#2955          Pharah                          13/8/10  4752 dmg  0 heal  0 mit
-  DAMAGE Szaths#2663          Emre                            18/6/0   5946 dmg  651 heal  0 mit
-  SUPPORT Cucciolo#11914       Lucio -> Kiriko (1:26)          10/5/19  3544 dmg  7024 heal  0 mit
-  SUPPORT YoungdaggerD#2341    Brigitte -> Jetpack Cat -> Ana  17/6/13  4603 dmg  3692 heal  814 mit
+  TANK  lunavod#21722        Reinhardt -> Ramattra (5:30)    10/9/1   8731 dmg  76 heal  17324 mit
+  DAMAGE Tiefoon#21446        Ashe                            25/5/1   12525 dmg  0 heal  0 mit
+  ...
 
 ── ENEMY (Team 0) ──
-  TANK  BioL2004#2426        Winston                         10/10/2  6204 dmg  1041 heal  9720 mit
-  DAMAGE LeirbaXx#2447        Cassidy                         16/7/3   7620 dmg  0 heal  218 mit
-  DAMAGE Skoupayou#1964       Hanzo -> Junkrat -> Ashe        12/8/2   6502 dmg  0 heal  0 mit
-  SUPPORT Khraym#2826          Illari                          12/6/7   4057 dmg  6708 heal  0 mit
-  SUPPORT Verdauga#2454        Ana                             6/8/5    2829 dmg  3408 heal  855 mit
+  TANK  PearlOgre#22851      Roadhog -> Doomfist -> Sigma    15/7/2   8316 dmg  3464 heal  7402 mit
+  ...
+
+── Reinhardt Stats ──
+★ OBJ CONTEST TIME: 00:02
+  CHARGE KILL: 1
+  FIRE STRIKE ACCURACY: 50%
+  EARTHSHATTER STUNS: 2
+
+── Ramattra Stats ──
+★ OBJ CONTEST TIME: 00:07
+  WEAPON ACCURACY: 29%
+  PUMMEL ACCURACY: 41%
+  ANNIHILATION EFFICIENCY: 306
 ═══════════════════════
 ```
 
@@ -153,24 +130,16 @@ Monitors the bottom-center of the screen for subtitle text using Tesseract (via 
 
 Monitors the bottom-left of the screen for yellow chat text. Detects player join/leave events (`[player] joined the game`, `[player] left the game`) using Tesseract. Fuzzy dedup prevents OCR noise from creating duplicate events.
 
-## Analyzer backends
+## Hero Panel OCR
 
-### ChatGPT/Codex (`ANALYZER=codex`, default)
+At match end, the Tab screenshot is analyzed locally using finetuned PaddleOCR models:
 
-Uses the ChatGPT/Codex API with structured JSON schema output. Returns match data including map, mode, queue type, result, player stats, hero-specific stats, and competitive rank range. Costs are logged to `api_costs.jsonl`.
+- **Hero stats** — per-hero stat label/value pairs (e.g., "CHARGE KILLS: 1", "WEAPON ACCURACY: 29%")
+- **Rank range** — competitive rank icons detected via template matching with datamined assets
+- **Wide match** — yellow icon presence indicates wide skill gap
+- **Hero bans** — banned hero portraits matched against datamined hero art
 
-- Model: configurable via `CODEX_MODEL` (default: `gpt-5.3-codex`)
-- `gpt-5.3-codex` is the most reliable model for reading unusual/stylized usernames — most other models (including 5.4) tend to misread them
-- Optional reasoning effort via `CODEX_REASONING` (`low`, `medium`, `high`, `xhigh`)
-- Sends zoomed crops of player names and rank area for better readability, plus a rank tier icon reference chart
-- Supports per-hero crop images for multi-hero analysis
-
-### Claude Vision (`ANALYZER=anthropic`)
-
-Sends the screenshot to Claude with a structured JSON schema prompt. Same feature set as Codex, with one caveat: Claude Sonnet cannot reliably identify competitive rank tier icons, so rank tiers are disabled by default (only wide match detection). Claude Opus identifies them correctly.
-
-- Model: configurable via `ANTHROPIC_MODEL` (default: `claude-sonnet-4-6`)
-- Screenshots are downscaled to 1568px max width before sending
+See [hero-panel-ocr.md](docs/hero-panel-ocr.md) for technical details and [training-ocr-models.md](docs/training-ocr-models.md) for retraining.
 
 ## Recording and replay
 
@@ -180,33 +149,12 @@ The app can record gameplay sessions for later replay and analysis.
 
 **Replay:** Use `--replay <dir>` or `--replay <file.mp4>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 
-## MCP integration
-
-With `--mcp`, structured match data (map, mode, players, stats, hero details, hero switch history) is uploaded to an MCP server via Streamable HTTP after each analysis. Requires `MCP_URL` in `.env`.
-
-## Telegram integration
-
-Uses [Telethon](https://docs.telethon.dev/) (MTProto user client, not bot API). First run requires interactive login to create a session file.
-
-Requires `.env` variables: `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_CHANNEL`.
-
 ## Configuration
 
 All settings are in `overwatchlooker/config.py`, loaded from environment variables:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ANALYZER` | `"codex"` | Backend: `"codex"` or `"anthropic"` |
-| `ANTHROPIC_API_KEY` | -- | Required for Anthropic backend |
-| `ANTHROPIC_MODEL` | `"claude-sonnet-4-6"` | Claude model to use |
-| `SONNET_RANK_TIERS` | `false` | Enable rank tier extraction on Sonnet (unreliable) |
-| `CODEX_MODEL` | `"gpt-5.3-codex"` | ChatGPT/Codex model to use |
-| `CODEX_REASONING` | -- | Reasoning effort: `low`, `medium`, `high`, `xhigh` |
-| `MAX_TOKENS` | `16000` | Max response tokens |
-| `MONITOR_INDEX` | `1` | Which monitor to capture (1 = primary) |
-| `SCREENSHOT_MAX_AGE_SECONDS` | `120` | Max age of screenshot before it's considered stale |
-| `SUBTITLE_POLL_INTERVAL` | `1.0` | Seconds between subtitle region checks |
-| `AUDIO_COOLDOWN_SECONDS` | `30.0` | Min seconds between detections |
 | `OVERWATCH_USERNAME` | -- | Your BattleTag (improves self-player detection) |
 | `MCP_URL` | -- | MCP server URL for match data upload |
 | `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
@@ -220,32 +168,31 @@ main.py                          # CLI entry point
 overwatchlooker/
   config.py                      # Environment config + constants
   match_state.py                 # Centralized match state (MatchState, PlayerState, formatting)
+  hero_panel.py                  # Hero panel OCR, rank detection, hero ban detection
   tick.py                        # Tick-based frame loop (live + replay)
   tray.py                        # System tray app, Overwolf event dispatch, match lifecycle
-  hotkey.py                      # Tab key listener (pynput, Windows foreground check)
-  screenshot.py                  # OW2 Tab screen validation, Tesseract OCR, screenshot saving
-  subtitle_listener.py           # Subtitle-based detection + hero switch tracking
-  chat_listener.py               # Chat OCR for player join/leave detection
+  screenshot.py                  # OW2 Tab screen validation, screenshot saving
+  subtitle_listener.py           # Subtitle-based detection + hero switch tracking (fallback)
+  chat_listener.py               # Chat OCR for player join/leave detection (fallback)
   heroes.py                      # Hero name fuzzy matching (Levenshtein)
   heroes.txt                     # Complete list of OW2 heroes
-  ranks.png                      # Rank tier icon reference for analyzers
-  analyzers/
-    __init__.py                  # Analyzer registry
-    anthropic.py                 # Claude Vision backend
-    codex.py                     # ChatGPT/Codex backend
-    common.py                    # Shared schema, formatting, hero merging
   recording/
     replay.py                    # MP4 + .meta replay with keyboard event synthesis
-  cache.py                       # SHA256-based disk cache for analysis results
   display.py                     # Formatting, logging, safe stdout for pythonw
-  notification.py                # Clipboard, tkinter overlay, audio chime
-  telegram.py                    # Telethon message sending
+  notification.py                # Desktop notifications + audio chime
   mcp_client.py                  # MCP server client (Streamable HTTP)
   ws_server.py                   # WebSocket server for companion apps
   overwolf.py                    # Overwolf GEP receiver (typed events, queue, recording)
+  models/                        # Finetuned PaddleOCR inference models (Git LFS)
+    panel_labels/                # Stat label OCR (Config Medium, A-Z + space)
+    panel_values/                # Stat value OCR (Futura, 0-9 + % + , + . + :)
+  assets/                        # Datamined game assets for template matching
+    ranks/                       # Rank tier icons + division signs + wide match icon
+    heroes/                      # Hero portrait thumbnails (50 heroes)
 docs/
   websocket-protocol.md          # WebSocket event protocol reference
+  hero-panel-ocr.md              # Hero panel OCR + rank detection technical reference
+  training-ocr-models.md         # Guide for training new OCR models
 recordings/                      # Recorded gameplay sessions
-cache/                           # Cached analysis results
 logs/                            # Timestamped log files
 ```

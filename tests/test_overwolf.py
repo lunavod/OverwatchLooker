@@ -224,6 +224,13 @@ class TestParseInfoUpdates:
         assert events[0].code == "0023"
         assert events[0].name == "Control"
 
+    def test_game_mode_push(self):
+        events = _parse_message({"type": "info_update", "data": {
+            "info": {"game_info": {"game_mode": "64"}},
+            "feature": "game_info"
+        }, "timestamp": 100})
+        assert events[0].name == "Push"
+
     def test_game_mode_without_leading_zeros(self):
         """Overwolf sometimes sends mode code without leading zeros."""
         events = _parse_message({"type": "info_update", "data": {

@@ -15,7 +15,6 @@ def _seed_match(app):
 
 def _make_trigger_sync(app):
     """Make _trigger_match_end synchronous (no delay) for testing."""
-    original = app._trigger_match_end
 
     def _sync_trigger():
         # Call original to set _analysis_triggered and debounce

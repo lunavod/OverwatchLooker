@@ -227,3 +227,36 @@ class TestFormatMatchState:
         output = format_match_state(ms)
         assert "15/3/8" in output
         assert "12500 dmg" in output
+
+    def test_format_contains_rank(self):
+        ms = self._make_match()
+        ms.rank_min = "Bronze 2"
+        ms.rank_max = "Gold 1"
+        ms.is_wide_match = True
+        output = format_match_state(ms)
+        assert "Bronze 2" in output
+        assert "Gold 1" in output
+        assert "WIDE" in output
+
+    def test_format_contains_bans(self):
+        ms = self._make_match()
+        ms.hero_bans = ["Mercy", "Zarya"]
+        output = format_match_state(ms)
+        assert "Bans: Mercy, Zarya" in output
+
+    def test_format_contains_hero_panel_stats(self):
+        from overwatchlooker.match_state import HeroPanel
+        ms = self._make_match()
+        local = ms.players["LUNAVOD"]
+        local.is_local = True
+        local.hero_panels = [HeroPanel(
+            hero_name="Reinhardt", crop_png=b"",
+            ocr_stats=[
+                {"label": "CHARGE KILLS", "value": "3", "is_featured": False},
+                {"label": "PLAYERS SAVED", "value": "5", "is_featured": True},
+            ],
+        )]
+        output = format_match_state(ms)
+        assert "Reinhardt Stats" in output
+        assert "CHARGE KILLS: 3" in output
+        assert "PLAYERS SAVED: 5" in output
