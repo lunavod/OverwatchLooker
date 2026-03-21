@@ -25,9 +25,19 @@ _labels_model = None
 _values_model = None
 
 
+def _suppress_paddle_warnings():
+    """Suppress noisy paddle/paddlex warnings during model loading."""
+    import warnings
+    warnings.filterwarnings("ignore", category=UserWarning)
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+    for name in ("paddle", "paddlex", "paddleocr"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+
 def _get_labels_model():
     global _labels_model
     if _labels_model is None:
+        _suppress_paddle_warnings()
         from paddlex import create_model
         _labels_model = create_model(
             "PP-OCRv5_server_rec",
@@ -40,6 +50,7 @@ def _get_labels_model():
 def _get_values_model():
     global _values_model
     if _values_model is None:
+        _suppress_paddle_warnings()
         from paddlex import create_model
         _values_model = create_model(
             "PP-OCRv5_server_rec",
@@ -47,6 +58,14 @@ def _get_values_model():
         )
         _logger.info("Loaded panel values OCR model")
     return _values_model
+
+
+def preload_models():
+    """Load OCR models eagerly. Call at startup to avoid delay on first match."""
+    _logger.info("Preloading OCR models...")
+    _get_values_model()
+    _get_labels_model()
+    _logger.info("OCR models ready")
 
 
 # ---------------------------------------------------------------------------

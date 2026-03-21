@@ -109,6 +109,16 @@ class App:
             from overwatchlooker.overwolf import OverwolfEventQueue
             self._overwolf_queue = OverwolfEventQueue()
             overwolf_receiver.add_listener(self._overwolf_queue.push)
+        # Preload OCR models in background so first match end is fast
+        threading.Thread(target=self._preload_models, daemon=True).start()
+
+    @staticmethod
+    def _preload_models() -> None:
+        try:
+            from overwatchlooker.hero_panel import preload_models
+            preload_models()
+        except Exception as e:
+            _logger.warning(f"OCR model preload failed: {e}")
 
     def _register_commands(self, bus: EventBus) -> None:
         """Register command handlers on the event bus."""
