@@ -13,10 +13,35 @@ def _seed_match(app):
     app._on_hero_switch("_SEED_", "Test", 0.0)
 
 
+def _make_trigger_sync(app):
+    """Make _trigger_match_end synchronous (no delay) for testing."""
+    original = app._trigger_match_end
+
+    def _sync_trigger():
+        # Call original to set _analysis_triggered and debounce
+        ms = app._match_state
+        if ms._analysis_triggered:
+            return
+        if not ms.players and ms.started_at is None:
+            return
+        import time as _time
+        now = _time.monotonic()
+        if now - app._last_match_end_ts < 5.0:
+            return
+        app._last_match_end_ts = now
+        ms._analysis_triggered = True
+        # Finalize immediately instead of after delay
+        app._finalize_match_end()
+
+    app._trigger_match_end = _sync_trigger
+
+
 @pytest.fixture
 def app():
     from overwatchlooker.tray import App
-    return App()
+    a = App()
+    _make_trigger_sync(a)
+    return a
 
 
 class TestMatchStateLifecycle:
@@ -258,6 +283,7 @@ class TestPostSubmitCooldown:
     def app_with_tick_loop(self):
         from overwatchlooker.tray import App
         a = App()
+        _make_trigger_sync(a)
         a._tick_loop = MagicMock()
         a._tick_loop.fps = 10
         a._tick_loop._current_tick = 1000

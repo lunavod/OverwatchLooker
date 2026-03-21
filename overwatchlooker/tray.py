@@ -278,8 +278,10 @@ class App:
         if is_new and entry.is_local:
             ms.dump_to_log("LocalPlayerRoster")
 
+    _MATCH_END_DELAY = 5.0  # seconds to wait after match end before snapshotting
+
     def _trigger_match_end(self) -> None:
-        """Snapshot MatchState, print summary, reset for next match."""
+        """Schedule match end — waits 5s for final tab screenshots, then snapshots."""
         ms = self._match_state
         if ms._analysis_triggered:
             _logger.debug("Match end trigger skipped: already triggered")
@@ -294,10 +296,24 @@ class App:
             _logger.debug("Match end trigger skipped: debounce")
             return
         self._last_match_end_ts = now
+        ms._analysis_triggered = True  # prevent re-trigger during delay
 
         _logger.info(f"Match end triggered: map={ms.map_name} result={ms.result} "
                      f"players={len(ms.players)} rounds={len(ms.rounds)} "
-                     f"source={ms.result_source}")
+                     f"source={ms.result_source} (waiting {self._MATCH_END_DELAY}s for final tabs)")
+
+        # Delay snapshot to allow final tab screenshots
+        def _delayed_snapshot():
+            time.sleep(self._MATCH_END_DELAY)
+            self._finalize_match_end()
+
+        threading.Thread(target=_delayed_snapshot, daemon=True).start()
+
+    def _finalize_match_end(self) -> None:
+        """Snapshot MatchState, analyze, print summary, reset for next match."""
+        ms = self._match_state
+
+        _logger.info(f"Match end finalizing: hero_tabs={list(ms.hero_tabs.keys())}")
         ms.dump_to_log("MatchEnd")
         snapshot = ms.snapshot()
 

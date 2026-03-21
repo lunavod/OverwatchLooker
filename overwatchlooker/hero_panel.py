@@ -284,11 +284,27 @@ def read_hero_panel(img: np.ndarray) -> HeroPanelResult | None:
         if featured:
             stats.append(featured)
 
-    # Regular stats
+    # Regular stats — only rows below the header
     rows = _find_text_rows(gray)
     classified = _classify_rows(gray, rows)
-    value_rows = [(s, e) for s, e, t in classified if t == "value"][1:]  # skip hero name
-    label_rows = [(s, e) for s, e, t in classified if t == "label"]
+    header_end = 0
+    for s, e, t in classified:
+        if t == "header":
+            header_end = e
+    raw_values = [(s, e) for s, e, t in classified if t == "value" and s > header_end]
+    label_rows = [(s, e) for s, e, t in classified if t == "label" and s > header_end]
+
+    # Merge consecutive value rows with small gaps (split glyphs like "2")
+    value_rows: list[tuple[int, int]] = []
+    for s, e in raw_values:
+        if value_rows and s - value_rows[-1][1] < 10:
+            value_rows[-1] = (value_rows[-1][0], e)
+        else:
+            value_rows.append((s, e))
+
+    # Skip the first value (hero name row)
+    if value_rows:
+        value_rows = value_rows[1:]
 
     n = min(len(value_rows), len(label_rows))
     for i in range(n):
