@@ -7,8 +7,8 @@ from pathlib import Path
 from paddlex import create_model
 
 # Models
-labels_model = create_model("PP-OCRv5_server_rec", model_dir="training_data/panel_labels/inference")
-values_model = create_model("PP-OCRv5_server_rec", model_dir="training_data/panel_values_v3/inference")
+labels_model = create_model("PP-OCRv5_server_rec", model_dir="overwatchlooker/models/panel_labels")
+values_model = create_model("PP-OCRv5_server_rec", model_dir="overwatchlooker/models/panel_values")
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,8 @@ def detect_panel(img):
         for y in range(rh):
             if col[y] > 0:
                 cur += 1
-                if cur > best: best = cur
+                if cur > best:
+                    best = cur
             else:
                 cur = 0
         col_max_run[x] = best
@@ -47,7 +48,8 @@ def detect_panel(img):
         for x in range(rw):
             if row[x] > 0:
                 cur += 1
-                if cur > best: best = cur
+                if cur > best:
+                    best = cur
             else:
                 cur = 0
         row_max_run[y] = best

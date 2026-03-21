@@ -483,3 +483,40 @@ class TestRecordingIO:
         events = load_overwolf_events(path)
         assert events[0][0] == 0
         assert events[1][0] == 100
+
+    def test_load_rebase_global_frame_offset(self, tmp_path):
+        """Old recordings with global frame numbers get rebased to start at 0."""
+        path = tmp_path / "test.overwolf.jsonl"
+        lines = [
+            serialize_event(MatchStartEvent(timestamp=100), frame=5000),
+            serialize_event(MatchEndEvent(timestamp=300), frame=5200),
+        ]
+        path.write_text("\n".join(lines) + "\n")
+        events = load_overwolf_events(path)
+        assert events[0][0] == 0
+        assert events[1][0] == 200
+
+    def test_writer_frame_offset(self, tmp_path):
+        """Writer subtracts frame_offset so events are recording-relative."""
+        path = tmp_path / "test.overwolf.jsonl"
+        writer = OverwolfRecordingWriter(path, frame_offset=1000)
+        writer.write(MatchStartEvent(timestamp=100), 1000)
+        writer.write(MatchEndEvent(timestamp=200), 1050)
+        writer.close()
+        events = load_overwolf_events(path)
+        assert events[0][0] == 0
+        assert events[1][0] == 50
+
+
+class TestMapCodes:
+    def test_runasapi(self):
+        from overwatchlooker.overwolf import MAP_CODES
+        assert MAP_CODES["3762"] == "Runasapi"
+
+    def test_push_mode(self):
+        from overwatchlooker.overwolf import MODE_CODES
+        assert MODE_CODES["0064"] == "Push"
+
+    def test_clash_mode(self):
+        from overwatchlooker.overwolf import MODE_CODES
+        assert MODE_CODES["0077"] == "Clash"

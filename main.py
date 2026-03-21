@@ -29,6 +29,23 @@ def main():
         action="store_true",
         help="Start Overwolf GEP receiver (accepts OverwatchListener connections)",
     )
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Submit completed matches to the MCP server",
+    )
+    parser.add_argument(
+        "--auto-recording",
+        action="store_true",
+        help="Automatically record matches (start on match start, stop after match end)",
+    )
+    parser.add_argument(
+        "--auto-recording-tail",
+        type=int,
+        default=60,
+        metavar="SECONDS",
+        help="Seconds to keep recording after match ends (default: 60)",
+    )
     args = parser.parse_args()
 
     # Start WebSocket server if requested
@@ -58,6 +75,10 @@ def main():
     if args.overwolf:
         from overwatchlooker.config import OVERWOLF_PORT
         features.append(f"overwolf://0.0.0.0:{OVERWOLF_PORT}")
+    if args.mcp:
+        features.append("mcp")
+    if args.auto_recording:
+        features.append(f"auto-recording (tail={args.auto_recording_tail}s)")
     print_status(f"OverwatchLooker started ({', '.join(features)})")
 
     if args.replay:
@@ -74,7 +95,10 @@ def main():
 
         app = App(use_transcript=args.transcript,
                   replay_source=replay, event_bus=event_bus,
-                  overwolf_receiver=overwolf_receiver)
+                  overwolf_receiver=overwolf_receiver,
+                  use_mcp=args.mcp,
+                  auto_recording=args.auto_recording,
+                  auto_recording_tail=args.auto_recording_tail)
         app._start_listening()
 
         try:
@@ -88,12 +112,16 @@ def main():
                 final_sim_time = replay.frame_count / replay.fps
                 app._subtitle_system.flush_pending(final_sim_time)
 
+            app.wait_for_analysis()
             app._stop_listening()
             replay.close()
             print_status("Replay finished.")
     else:
         app = App(use_transcript=args.transcript,
-                  event_bus=event_bus, overwolf_receiver=overwolf_receiver)
+                  event_bus=event_bus, overwolf_receiver=overwolf_receiver,
+                  use_mcp=args.mcp,
+                  auto_recording=args.auto_recording,
+                  auto_recording_tail=args.auto_recording_tail)
         app.run()
 
 

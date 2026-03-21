@@ -45,14 +45,15 @@ async def _submit_match_async(
         "is_backfill": is_backfill,
     }
 
-    if data.get("rank_range"):
-        rr = data["rank_range"]
-        if rr.get("min_rank"):
-            args["rank_min"] = rr["min_rank"]
-        if rr.get("max_rank"):
-            args["rank_max"] = rr["max_rank"]
-        if rr.get("is_wide"):
-            args["is_wide_match"] = True
+    # Pass through optional rank fields
+    if data.get("rank_min"):
+        args["rank_min"] = data["rank_min"]
+    if data.get("rank_max"):
+        args["rank_max"] = data["rank_max"]
+    if data.get("is_wide_match"):
+        args["is_wide_match"] = True
+    if data.get("banned_heroes"):
+        args["banned_heroes"] = data["banned_heroes"]
 
     if png_bytes:
         args["screenshot_uploads"] = [{

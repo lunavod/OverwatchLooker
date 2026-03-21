@@ -24,6 +24,7 @@ from overwatchlooker.match_state import (
     RoundInfo,
     StatsSnapshot,
     TabScreenshot,
+    build_mcp_payload,
     format_match_state,
 )
 from overwatchlooker.notification import show_notification
@@ -79,10 +80,16 @@ _OW_POLL_INTERVAL = 2.0  # seconds between OW window checks
 _OW_STABILITY_TIME = 5.0  # seconds OW must be present before starting engine
 
 
+_AUTO_RECORDINGS_DIR = Path(__file__).parent.parent / "recordings_auto"
+
+
 class App:
     def __init__(self, use_transcript: bool = False, replay_source=None,
                  event_bus: EventBus | None = None,
-                 overwolf_receiver: OverwolfReceiver | None = None):
+                 overwolf_receiver: OverwolfReceiver | None = None,
+                 use_mcp: bool = False,
+                 auto_recording: bool = False,
+                 auto_recording_tail: int = 60):
         self._active = False
         self._detector: SubtitleSystem | None = None
         self._lock = threading.Lock()
@@ -103,6 +110,13 @@ class App:
         self._poll_thread: threading.Thread | None = None
         self._poll_stop = threading.Event()
         self._recording = False
+        self._use_mcp = use_mcp
+        self._auto_recording = auto_recording
+        self._auto_recording_tail = auto_recording_tail
+        self._auto_recording_active = False  # True while auto-recording is in progress
+        self._auto_stop_timer: threading.Timer | None = None
+        self._pending_analysis = threading.Event()
+        self._pending_analysis.set()  # no analysis pending initially
         if event_bus:
             self._register_commands(event_bus)
         if overwolf_receiver:
@@ -191,6 +205,7 @@ class App:
                 new._local_team = ms._local_team
             ms = new
             new.dump_to_log("MatchStart")
+            self._auto_recording_start()
             return
 
         if isinstance(event, MatchEndEvent):
@@ -217,9 +232,22 @@ class App:
         if isinstance(event, MapUpdate):
             ms.map_name = event.name
             ms.map_code = event.code
+            # Notify about unknown map codes so we can add them
+            if event.name.startswith("Unknown ("):
+                _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
+                if ms.mode in _REAL_MODES:
+                    show_notification("OverwatchLooker",
+                                      f"Unknown map code {event.code} (mode={ms.mode}). "
+                                      f"Please report!")
         elif isinstance(event, GameModeUpdate):
             ms.mode = event.name
             ms.mode_code = event.code
+            if ms.map_name.startswith("Unknown ("):
+                _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
+                if event.name in _REAL_MODES:
+                    show_notification("OverwatchLooker",
+                                      f"Unknown map code {ms.map_code} (mode={event.name}). "
+                                      f"Please report!")
         elif isinstance(event, GameTypeUpdate):
             ms.game_type = event.game_type
         elif isinstance(event, QueueTypeUpdate):
@@ -248,6 +276,7 @@ class App:
         player.slot = event.slot
 
         if is_new:
+            player.joined_at = event.timestamp
             local_tag = " [LOCAL]" if entry.is_local else ""
             _logger.info(f"Roster new player: {entry.player_name} ({entry.battlenet_tag}) "
                          f"team={entry.team} slot={event.slot}{local_tag}")
@@ -325,6 +354,7 @@ class App:
             return
         self._last_match_end_ts = now
         ms._analysis_triggered = True  # prevent re-trigger during delay
+        self._pending_analysis.clear()  # mark analysis as pending
 
         _logger.info(f"Match end triggered: map={ms.map_name} result={ms.result} "
                      f"players={len(ms.players)} rounds={len(ms.rounds)} "
@@ -361,7 +391,10 @@ class App:
         # Reset match state for next match
         self._match_state = MatchState()
 
-        # Analyze and print in background thread
+        # Schedule auto-recording stop
+        self._auto_recording_schedule_stop()
+
+        # Analyze, print, and submit in background thread
         def _finalize():
             self._analyze_snapshot(snapshot)
             summary = format_match_state(snapshot)
@@ -379,6 +412,11 @@ class App:
             }})
             show_notification("OverwatchLooker",
                               f"Match complete: {snapshot.result.value if snapshot.result else 'UNKNOWN'}")
+
+            # Submit to MCP
+            self._submit_to_mcp(snapshot)
+
+            self._pending_analysis.set()  # signal analysis complete
 
         threading.Thread(target=_finalize, daemon=True).start()
 
@@ -439,6 +477,156 @@ class App:
 
         except Exception as e:
             _logger.warning(f"Snapshot analysis failed: {e}")
+
+    def _submit_to_mcp(self, snapshot: MatchState) -> None:
+        """Submit match to MCP server if enabled via --mcp flag."""
+        if not self._use_mcp:
+            return
+        from overwatchlooker.config import MCP_URL
+        if not MCP_URL:
+            _logger.warning("--mcp flag set but MCP_URL not configured in .env")
+            return
+        try:
+            from overwatchlooker.mcp_client import submit_match
+
+            payload = build_mcp_payload(snapshot)
+
+            # Attach latest tab screenshot
+            png_bytes = None
+            if snapshot.latest_tab:
+                png_bytes = snapshot.latest_tab.png_bytes
+
+            result = submit_match(payload, png_bytes=png_bytes)
+            match_id = result.get("match_id")
+            if match_id:
+                _logger.info(f"MCP: submitted match {match_id}")
+                self._ws_emit({"type": "mcp_submitted", "data": {"match_id": match_id}})
+            else:
+                _logger.info("MCP: submitted match (no ID returned)")
+        except Exception as e:
+            _logger.warning(f"MCP submission failed: {e}")
+
+    def _auto_recording_start(self) -> None:
+        """Start auto-recording if enabled and engine is available."""
+        if not self._auto_recording or self._engine is None:
+            return
+        if self._auto_recording_active:
+            _logger.debug("Auto-recording: already active, skipping start")
+            return
+        if self._recording:
+            _logger.debug("Auto-recording: manual recording active, skipping")
+            return
+        # Cancel any pending stop timer (new match started before tail ended)
+        if self._auto_stop_timer:
+            self._auto_stop_timer.cancel()
+            self._auto_stop_timer = None
+
+        try:
+            _AUTO_RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            rec_dir = _AUTO_RECORDINGS_DIR / timestamp
+            rec_dir.mkdir()
+            base_path = rec_dir / "recording"
+            info = self._engine.start_recording(str(base_path))
+            self._auto_recording_active = True
+            self._recording = True
+            # Record Overwolf events alongside video
+            if self._overwolf_system:
+                from overwatchlooker.overwolf import OverwolfRecordingWriter
+                frame_offset = self._tick_loop._current_tick if self._tick_loop else 0
+                writer = OverwolfRecordingWriter(
+                    rec_dir / "recording.overwolf.jsonl", frame_offset=frame_offset)
+                self._overwolf_system.set_writer(writer)
+                # Write current match state so replay has the full context
+                self._write_match_state_to_recording(writer, frame_offset)
+            _logger.info(f"Auto-recording started: {info.video_path}")
+            print_status(f"Auto-recording to {info.video_path}")
+            self._ws_emit({"type": "state", "recording": True})
+            self._rebuild_menu()
+        except Exception as e:
+            _logger.warning(f"Auto-recording start failed: {e}")
+
+    def _write_match_state_to_recording(self, writer, frame_offset: int) -> None:
+        """Write synthetic events for the current match state into the recording.
+
+        This ensures replay has the MatchStartEvent and all context that was
+        already processed before the recording started.
+        """
+        from overwatchlooker.overwolf import (
+            GameModeUpdate, GameTypeUpdate, MapUpdate, MatchStartEvent,
+            PseudoMatchIdUpdate, QueueTypeUpdate, RosterEntry, RosterUpdate,
+            RoundStartEvent,
+        )
+        ms = self._match_state
+        ts = ms.started_at or 0
+        frame = frame_offset  # will be written as frame 0 after offset subtraction
+
+        writer.write(MatchStartEvent(timestamp=ts), frame)
+
+        if ms.map_name and ms.map_code:
+            writer.write(MapUpdate(code=ms.map_code, name=ms.map_name, timestamp=ts), frame)
+        if ms.mode and ms.mode_code:
+            writer.write(GameModeUpdate(code=ms.mode_code, name=ms.mode, timestamp=ts), frame)
+        if ms.game_type:
+            writer.write(GameTypeUpdate(game_type=ms.game_type, timestamp=ts), frame)
+        if ms.queue_type:
+            writer.write(QueueTypeUpdate(queue_type=ms.queue_type, timestamp=ts), frame)
+        if ms.pseudo_match_id:
+            writer.write(PseudoMatchIdUpdate(
+                pseudo_match_id=ms.pseudo_match_id, timestamp=ts), frame)
+        for r in ms.rounds:
+            writer.write(RoundStartEvent(timestamp=r.started_at), frame)
+
+        # Write current roster
+        for p in ms.players.values():
+            if p.slot is not None:
+                entry = RosterEntry(
+                    player_name=p.player_name,
+                    battlenet_tag=p.battletag,
+                    is_local=p.is_local,
+                    is_teammate=(p.team == ms._local_team) if ms._local_team is not None else False,
+                    hero_name=p.current_hero or "",
+                    hero_role=p.role.value if p.role else "",
+                    team=p.team if p.team is not None else 0,
+                    kills=p.stats.kills if p.stats else 0,
+                    deaths=p.stats.deaths if p.stats else 0,
+                    assists=p.stats.assists if p.stats else 0,
+                    damage=p.stats.damage if p.stats else 0.0,
+                    healed=p.stats.healing if p.stats else 0.0,
+                    mitigated=p.stats.mitigation if p.stats else 0.0,
+                )
+                writer.write(RosterUpdate(slot=p.slot, entry=entry, timestamp=ts), frame)
+
+    def _auto_recording_schedule_stop(self) -> None:
+        """Schedule auto-recording stop after the configured tail duration."""
+        if not self._auto_recording_active:
+            return
+        _logger.info(f"Auto-recording: scheduling stop in {self._auto_recording_tail}s")
+
+        def _stop():
+            self._auto_recording_stop()
+
+        self._auto_stop_timer = threading.Timer(self._auto_recording_tail, _stop)
+        self._auto_stop_timer.daemon = True
+        self._auto_stop_timer.start()
+
+    def _auto_recording_stop(self) -> None:
+        """Stop auto-recording."""
+        if not self._auto_recording_active or self._engine is None:
+            return
+        try:
+            self._engine.stop_recording()
+            self._auto_recording_active = False
+            self._recording = False
+            if self._overwolf_system:
+                self._overwolf_system.clear_writer()
+            _logger.info("Auto-recording stopped")
+            print_status("Auto-recording saved.")
+            show_notification("OverwatchLooker", "Auto-recording saved.")
+            self._ws_emit({"type": "state", "recording": False})
+            self._rebuild_menu()
+        except Exception as e:
+            _logger.warning(f"Auto-recording stop failed: {e}")
 
     def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str,
                         tick: int = 0) -> None:
@@ -647,6 +835,7 @@ class App:
             WindowExeTarget("(?i)overwatch"),
             max_fps=fps,
             key_map=key_map,
+            record_gop=20,
         )
         self._engine.start()
 
@@ -848,6 +1037,10 @@ class App:
             print_error("No capture engine running. Start Overwatch first.")
             return
 
+        if self._auto_recording_active:
+            print_error("Auto-recording is active. Stop it via match end or restart without --auto-recording.")
+            return
+
         if self._recording:
             try:
                 self._engine.stop_recording()
@@ -871,7 +1064,9 @@ class App:
                 # Start Overwolf event recording alongside video
                 if self._overwolf_system:
                     from overwatchlooker.overwolf import OverwolfRecordingWriter
-                    writer = OverwolfRecordingWriter(rec_dir / "recording.overwolf.jsonl")
+                    frame_offset = self._tick_loop._current_tick if self._tick_loop else 0
+                    writer = OverwolfRecordingWriter(
+                        rec_dir / "recording.overwolf.jsonl", frame_offset=frame_offset)
                     self._overwolf_system.set_writer(writer)
                 print_status(f"Recording to {info.video_path}")
                 show_notification("OverwatchLooker", "Recording started.")
@@ -880,11 +1075,19 @@ class App:
                 print_error(f"Failed to start recording: {e}")
         self._rebuild_menu()
 
+    def wait_for_analysis(self, timeout: float = 30.0) -> None:
+        """Block until any pending match analysis completes."""
+        self._pending_analysis.wait(timeout)
+
     def _on_quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
+        if self._auto_stop_timer:
+            self._auto_stop_timer.cancel()
+            self._auto_stop_timer = None
         if self._engine and self._recording:
             try:
                 self._engine.stop_recording()
                 self._recording = False
+                self._auto_recording_active = False
             except Exception:
                 pass
         self._stop_listening()

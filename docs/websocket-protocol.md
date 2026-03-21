@@ -178,6 +178,27 @@ Match ended. Contains a summary of the collected match data.
 | `map` | `string` | Map name (may be empty if Overwolf not connected) |
 | `mode` | `string` | Game mode name (may be empty) |
 | `duration_ms` | `number?` | Match duration in milliseconds, or `null` |
+| `rank_min` | `string?` | Minimum rank in the lobby (e.g. "Bronze 2"), or `null` |
+| `rank_max` | `string?` | Maximum rank in the lobby (e.g. "Gold 1"), or `null` |
+| `is_wide_match` | `boolean?` | Whether the match has a wide skill range |
+| `hero_bans` | `string[]?` | List of banned hero names, or `null` |
+
+### `mcp_submitted`
+
+Emitted after a match is successfully submitted to the MCP server (requires `--mcp` flag).
+
+```json
+{
+  "type": "mcp_submitted",
+  "data": {
+    "match_id": "abc-123-def"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `match_id` | `string?` | MCP match ID, if returned by the server |
 
 ---
 

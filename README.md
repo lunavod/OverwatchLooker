@@ -62,9 +62,12 @@ Replays a previously recorded session at max speed, running the full detection p
 | Flag | Description |
 |---------|-------------|
 | `--overwolf` | Start Overwolf GEP receiver (accepts OverwatchListener connections on port 28025) |
+| `--mcp` | Submit completed matches to the MCP server (requires `MCP_URL` in `.env`) |
 | `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
 | `--transcript` | Log subtitle OCR results to `transcripts/` folder |
 | `--replay` | Replay a recording directory or `.mp4` file |
+| `--auto-recording` | Automatically record matches (starts on match start, stops after match end) |
+| `--auto-recording-tail N` | Seconds to keep recording after match ends (default: 60) |
 
 ## Output format
 
@@ -145,7 +148,9 @@ See [hero-panel-ocr.md](docs/hero-panel-ocr.md) for technical details and [train
 
 The app can record gameplay sessions for later replay and analysis.
 
-**Recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Overwolf GEP events (if `--overwolf` is active) are stored as JSONL in a `.overwolf.jsonl` file. Produces `recording.mp4` + `recording.meta` (+ `recording.overwolf.jsonl`) in timestamped directories under `recordings/`.
+**Manual recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Overwolf GEP events (if `--overwolf` is active) are stored as JSONL in a `.overwolf.jsonl` file. Produces `recording.mp4` + `recording.meta` (+ `recording.overwolf.jsonl`) in timestamped directories under `recordings/`.
+
+**Auto-recording:** With `--auto-recording`, recording starts automatically on match start and stops after a configurable tail period (default 60s, set via `--auto-recording-tail`). Saved to `recordings_auto/`.
 
 **Replay:** Use `--replay <dir>` or `--replay <file.mp4>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 
@@ -193,6 +198,7 @@ docs/
   websocket-protocol.md          # WebSocket event protocol reference
   hero-panel-ocr.md              # Hero panel OCR + rank detection technical reference
   training-ocr-models.md         # Guide for training new OCR models
-recordings/                      # Recorded gameplay sessions
+recordings/                      # Manual recorded gameplay sessions
+recordings_auto/                 # Auto-recorded match sessions
 logs/                            # Timestamped log files
 ```

@@ -421,3 +421,158 @@ def format_match_state(match: MatchState) -> str:
 
     lines.append("\u2550" * 23)
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# MCP payload builder
+# ---------------------------------------------------------------------------
+
+_MODE_TO_MCP: dict[str, str] = {
+    "Escort": "ESCORT",
+    "Hybrid": "HYBRID",
+    "Control": "CONTROL",
+    "Push": "PUSH",
+    "Clash": "CLASH",
+    "Flashpoint": "FLASHPOINT",
+}
+
+
+def build_mcp_payload(match: MatchState) -> dict:
+    """Convert a MatchState snapshot into the dict expected by mcp_client.submit_match."""
+    # Duration as MM:SS
+    duration_str = _format_duration(match.duration)
+
+    # Mode: map human-readable to MCP uppercase, fallback to uppercase of whatever we have
+    mode = _MODE_TO_MCP.get(match.mode, match.mode.upper() if match.mode else "UNKNOWN")
+
+    # Queue type: RANKED → COMPETITIVE, everything else → QUICKPLAY
+    if match.game_type == GameType.RANKED:
+        queue_type = "COMPETITIVE"
+    else:
+        queue_type = "QUICKPLAY"
+
+    # Result
+    result = match.result.value if match.result else "UNKNOWN"
+
+    # Build players array
+    players: list[dict] = []
+    # Determine match start time for relative timestamps
+    match_start_ms = (match.rounds[0].started_at if match.rounds
+                      else match.started_at or 0)
+
+    # Detect disconnected players: when two players share a slot,
+    # the earlier one (by first hero_swap timestamp) disconnected.
+    disconnected: set[str] = set()
+    slot_owners: dict[int, list[PlayerState]] = {}
+    for p in match.players.values():
+        if p.slot is not None:
+            slot_owners.setdefault(p.slot, []).append(p)
+    for slot, owners in slot_owners.items():
+        if len(owners) > 1:
+            # Keep the one with the latest first hero swap (= the replacement)
+            owners.sort(key=lambda o: (
+                o.hero_swaps[0].detected_at if o.hero_swaps else 0))
+            for old in owners[:-1]:
+                disconnected.add(old.player_name)
+                _logger.info(f"MCP payload: skipping disconnected player "
+                             f"{old.player_name} (slot {slot} taken by "
+                             f"{owners[-1].player_name})")
+
+    for p in match.players.values():
+        if p.player_name in disconnected:
+            continue
+
+        team = p.team_side.value if p.team_side else "ALLY"
+        role = p.role.value if p.role else None
+        # MCP expects DPS, not DAMAGE
+        if role == "DAMAGE":
+            role = "DPS"
+
+        player_dict: dict = {
+            "team": team,
+            "player_name": p.battletag if p.battletag else p.player_name,
+            "is_self": p.is_local,
+        }
+        if role:
+            player_dict["role"] = role
+
+        # Joined at (seconds from match start)
+        if p.joined_at is not None:
+            player_dict["joined_at"] = max(0, (p.joined_at - match_start_ms) // 1000)
+
+        # Current hero (last swap)
+        if p.current_hero:
+            player_dict["hero_name"] = p.current_hero
+
+        # Stats
+        if p.stats:
+            player_dict["eliminations"] = p.stats.kills
+            player_dict["deaths"] = p.stats.deaths
+            player_dict["assists"] = p.stats.assists
+            player_dict["damage"] = int(p.stats.damage)
+            player_dict["healing"] = int(p.stats.healing)
+            player_dict["mitigation"] = int(p.stats.mitigation)
+
+        # Heroes array (swap history + per-hero panel stats)
+        if p.hero_swaps:
+            heroes: list[dict] = []
+            panel_by_hero: dict[str, HeroPanel] = {}
+            for hp in p.hero_panels:
+                panel_by_hero[hp.hero_name] = hp
+
+            for swap in p.hero_swaps:
+                started_at_sec = max(
+                    0, (swap.detected_at - match_start_ms) // 1000)
+                hero_entry: dict = {
+                    "hero_name": swap.hero,
+                    "started_at": [started_at_sec],
+                }
+                # Attach panel OCR stats if available
+                panel = panel_by_hero.get(swap.hero)
+                if panel and panel.ocr_stats:
+                    hero_entry["stats"] = panel.ocr_stats
+                heroes.append(hero_entry)
+
+            player_dict["heroes"] = heroes
+
+            # Swap snapshots (cumulative stats at each hero swap point)
+            snapshots: list[dict] = []
+            for swap in p.hero_swaps:
+                if swap.stats_at_detection:
+                    s = swap.stats_at_detection
+                    snapshots.append({
+                        "time": max(0, (swap.detected_at - match_start_ms) // 1000),
+                        "eliminations": s.kills,
+                        "assists": s.assists,
+                        "deaths": s.deaths,
+                        "damage": int(s.damage),
+                        "healing": int(s.healing),
+                        "mitigation": int(s.mitigation),
+                    })
+            if snapshots:
+                player_dict["swap_snapshots"] = snapshots
+
+        players.append(player_dict)
+
+    data: dict = {
+        "map_name": match.map_name or "Unknown",
+        "duration": duration_str,
+        "mode": mode,
+        "queue_type": queue_type,
+        "result": result,
+        "players": players,
+    }
+
+    # Rank
+    if match.rank_min:
+        data["rank_min"] = match.rank_min
+    if match.rank_max:
+        data["rank_max"] = match.rank_max
+    if match.is_wide_match:
+        data["is_wide_match"] = True
+
+    # Hero bans
+    if match.hero_bans:
+        data["banned_heroes"] = match.hero_bans
+
+    return data

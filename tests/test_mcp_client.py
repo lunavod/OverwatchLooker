@@ -114,7 +114,9 @@ class TestSubmitMatch:
             submit_match(match_data)
 
     def test_rank_range(self, mock_mcp_config, match_data):
-        match_data["rank_range"] = {"min_rank": "Gold 3", "max_rank": "Diamond 1", "is_wide": True}
+        match_data["rank_min"] = "Gold 3"
+        match_data["rank_max"] = "Diamond 1"
+        match_data["is_wide_match"] = True
         result = _make_result()
         p1, p2, mock_session = _patch_mcp_session(result)
         with p1, p2:
@@ -125,6 +127,17 @@ class TestSubmitMatch:
         assert args["rank_min"] == "Gold 3"
         assert args["rank_max"] == "Diamond 1"
         assert args["is_wide_match"] is True
+
+    def test_banned_heroes(self, mock_mcp_config, match_data):
+        match_data["banned_heroes"] = ["Mercy", "Zarya"]
+        result = _make_result()
+        p1, p2, mock_session = _patch_mcp_session(result)
+        with p1, p2:
+            from overwatchlooker.mcp_client import submit_match
+            submit_match(match_data)
+
+        args = mock_session.call_tool.call_args[0][1]
+        assert args["banned_heroes"] == ["Mercy", "Zarya"]
 
 
 class TestExtractMatchId:

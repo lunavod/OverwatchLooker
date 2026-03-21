@@ -101,6 +101,7 @@ MAP_CODES: dict[str, str] = {
     "3390": "Suravasa",
     "3411": "Esperança",
     "3603": "New Junk City",
+    "3762": "Runasapi",
 }
 
 MODE_CODES: dict[str, str] = {
@@ -682,12 +683,13 @@ def deserialize_event(line: str) -> tuple[int, OverwolfEvent]:
 class OverwolfRecordingWriter:
     """Writes Overwolf events to a JSONL file during recording."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, frame_offset: int = 0) -> None:
         self._file: IO[str] = open(path, "w", encoding="utf-8")
-        _logger.info(f"Overwolf recording: {path}")
+        self._frame_offset = frame_offset
+        _logger.info(f"Overwolf recording: {path} (frame_offset={frame_offset})")
 
     def write(self, event: OverwolfEvent, frame: int) -> None:
-        line = serialize_event(event, frame)
+        line = serialize_event(event, frame - self._frame_offset)
         self._file.write(line + "\n")
         self._file.flush()
 
@@ -708,4 +710,9 @@ def load_overwolf_events(path: Path) -> list[tuple[int, OverwolfEvent]]:
             except Exception as e:
                 _logger.debug(f"Skipping bad overwolf event line: {e}")
     events.sort(key=lambda x: x[0])
+    # Fix old recordings that stored global frame numbers instead of
+    # recording-relative ones: shift so the first event starts at frame 0.
+    if events and events[0][0] > 0:
+        offset = events[0][0]
+        events = [(f - offset, e) for f, e in events]
     return events
