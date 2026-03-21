@@ -90,6 +90,7 @@ class PlayerState:
     hero_swaps: list[HeroSwap] = field(default_factory=list)
     stats: StatsSnapshot | None = None  # latest cumulative from Overwolf
     hero_panels: list[HeroPanel] = field(default_factory=list)
+    in_party: bool = False  # green party indicator on scoreboard
     joined_at: int | None = None  # epoch ms
     left_at: int | None = None  # epoch ms
 
@@ -239,6 +240,7 @@ class MatchState:
                            "heal": p.stats.healing, "mit": p.stats.mitigation}
                           if p.stats else None),
                 "hero_panels": [hp.hero_name for hp in p.hero_panels],
+                "in_party": p.in_party,
                 "joined_at": p.joined_at,
                 "left_at": p.left_at,
             }
@@ -315,7 +317,8 @@ def _player_line(p: PlayerState) -> str:
     else:
         stats_str = ""
 
-    return f"  {role} {name} {hero_str} {stats_str}"
+    party = " [P]" if p.in_party else ""
+    return f"  {role} {name} {hero_str} {stats_str}{party}"
 
 
 def format_match_state(match: MatchState) -> str:
@@ -492,6 +495,7 @@ def build_mcp_payload(match: MatchState) -> dict:
             "team": team,
             "player_name": p.battletag if p.battletag else p.player_name,
             "is_self": p.is_local,
+            "in_party": p.in_party,
         }
         if role:
             player_dict["role"] = role

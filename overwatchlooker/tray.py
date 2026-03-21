@@ -179,6 +179,10 @@ class App:
         if self._bus:
             self._bus.emit(event)
 
+    def _ws_emit_match_state(self) -> None:
+        """Emit the current match state to the WebSocket bus."""
+        self._ws_emit({"type": "match_state", "data": self._match_state._to_dict()})
+
     def _on_overwolf_event(self, event: OverwolfEvent) -> None:
         """Handle a typed event from the Overwolf receiver — update MatchState."""
         _logger.info(f"Overwolf: {type(event).__name__}: {event}")
@@ -206,11 +210,13 @@ class App:
             ms = new
             new.dump_to_log("MatchStart")
             self._auto_recording_start()
+            self._ws_emit_match_state()
             return
 
         if isinstance(event, MatchEndEvent):
             _logger.info(f"MatchEnd: ts={event.timestamp}")
             ms.ended_at = event.timestamp
+            self._ws_emit_match_state()
             self._trigger_match_end()
             return
 
@@ -224,6 +230,7 @@ class App:
             ms.result_source = ResultSource.OVERWOLF
             if ms.ended_at is None:
                 ms.ended_at = event.timestamp
+            self._ws_emit_match_state()
             # If no MatchEndEvent arrives, outcome alone can trigger analysis
             if not ms._analysis_triggered:
                 self._trigger_match_end()
@@ -261,6 +268,8 @@ class App:
                 ms.rounds[-1].ended_at = event.timestamp
         elif isinstance(event, RosterUpdate):
             self._handle_roster_update(event)
+
+        self._ws_emit_match_state()
 
     def _handle_roster_update(self, event: RosterUpdate) -> None:
         """Process a single RosterUpdate into MatchState."""
@@ -425,7 +434,7 @@ class App:
         try:
             import cv2
             import numpy as np
-            from overwatchlooker.hero_panel import read_hero_panel, detect_rank_range, detect_hero_bans
+            from overwatchlooker.hero_panel import read_hero_panel, detect_rank_range, detect_hero_bans, detect_party_slots
 
             local = snapshot.local_player
 
@@ -474,6 +483,23 @@ class App:
                 bans = detect_hero_bans(img)
                 if bans:
                     snapshot.hero_bans = bans
+
+                # Party detection — map green indicators to ally players by role order
+                assert img is not None
+                party_flags = detect_party_slots(img)
+                if party_flags:
+                    from overwatchlooker.match_state import TeamSide
+                    _ROLE_ORDER = {PlayerRole.TANK: 0, PlayerRole.DAMAGE: 1, PlayerRole.SUPPORT: 2}
+                    allies = sorted(
+                        [p for p in snapshot.players.values()
+                         if p.team_side == TeamSide.ALLY],
+                        key=lambda p: (_ROLE_ORDER.get(p.role, 99) if p.role else 99, p.player_name))
+                    for i, flag in enumerate(party_flags):
+                        if i < len(allies) and flag:
+                            allies[i].in_party = True
+                    party_names = [a.player_name for a in allies if a.in_party]
+                    if party_names:
+                        _logger.info(f"Party members: {party_names}")
 
         except Exception as e:
             _logger.warning(f"Snapshot analysis failed: {e}")
@@ -713,6 +739,7 @@ class App:
             _logger.debug(f"Subtitle hero switch deduped: {player} -> {hero} (current={current})")
         self._ws_emit({"type": "hero_switch", "player": player,
                        "hero": hero, "time": sim_time})
+        self._ws_emit_match_state()
 
     def _on_player_change(self, player: str, event: str, sim_time: float) -> None:
         """Callback when a player joins or leaves the game."""
@@ -726,6 +753,7 @@ class App:
             p.left_at = epoch_ms
         self._ws_emit({"type": "player_change", "player": player,
                        "event": event, "time": sim_time})
+        self._ws_emit_match_state()
 
     def _on_detected(self, result: str, detection_time: float = 0.0) -> None:
         """Immediate callback when VICTORY/DEFEAT is first detected."""
@@ -748,6 +776,7 @@ class App:
             ms.result_source = ResultSource.SUBTITLE
         if ms.ended_at is None:
             ms.ended_at = int(detection_time * 1000)
+        self._ws_emit_match_state()
         self._trigger_match_end()
 
     # ------------------------------------------------------------------

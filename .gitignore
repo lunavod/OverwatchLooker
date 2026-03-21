@@ -41,6 +41,7 @@ batch_*.py
 
 # Recordings
 recordings/
+recordings_auto/
 *.mkv
 
 # Fonts (downloaded, not source)

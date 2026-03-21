@@ -183,6 +183,58 @@ Match ended. Contains a summary of the collected match data.
 | `is_wide_match` | `boolean?` | Whether the match has a wide skill range |
 | `hero_bans` | `string[]?` | List of banned hero names, or `null` |
 
+### `match_state`
+
+Emitted whenever any part of the match state changes — Overwolf events (roster, map, mode, rounds, outcome), subtitle/chat detections, or match lifecycle transitions. Contains the full serialized match state.
+
+```json
+{
+  "type": "match_state",
+  "data": {
+    "map": "Ilios",
+    "map_code": "1645",
+    "mode": "Control",
+    "mode_code": "23",
+    "game_type": "RANKED",
+    "queue_type": "ROLE_QUEUE",
+    "result": null,
+    "result_source": null,
+    "started_at": 1774119842381,
+    "ended_at": null,
+    "duration_ms": null,
+    "rounds": [{"started": 1774119864335, "ended": null}],
+    "pseudo_match_id": "9d59eeff-...",
+    "rank_min": null,
+    "rank_max": null,
+    "is_wide_match": null,
+    "hero_bans": null,
+    "local_team": 1,
+    "hero_tabs": {},
+    "latest_tab": null,
+    "players": {
+      "LUNAVOD": {
+        "battletag": "lunavod#21722",
+        "team": 1,
+        "team_side": "ALLY",
+        "is_local": true,
+        "role": "TANK",
+        "slot": 9,
+        "hero_swaps": [{"hero": "Reinhardt", "at": 1774119863346, "source": "overwolf:roster", "stats": null}],
+        "stats": {"k": 5, "d": 2, "a": 1, "dmg": 3200.0, "heal": 0.0, "mit": 5100.0},
+        "hero_panels": [],
+        "in_party": false,
+        "joined_at": 1774119863346,
+        "left_at": null
+      }
+    }
+  }
+}
+```
+
+This event fires frequently (on every roster update, map change, round start/end, etc.). Companion apps should debounce or diff as needed.
+
+---
+
 ### `mcp_submitted`
 
 Emitted after a match is successfully submitted to the MCP server (requires `--mcp` flag).
@@ -247,14 +299,18 @@ A typical match produces events in this order:
 
 ```
 state         → active: true (listening started)
+match_state   → match started (Overwolf MatchStartEvent)
+match_state   → roster/map/mode updates (each mutation emits full state)
 hero_switch   → initial hero assignments (subtitle OCR or Overwolf roster)
 tab_capture   → player presses Tab
 hero_crop     → hero panel detected in Tab screenshot
+match_state   → hero swaps, round starts/ends, stat updates
 hero_switch   → mid-match hero swaps
 player_change → player leaves/joins mid-match
-tab_capture   → another Tab press
+match_state   → match outcome (VICTORY/DEFEAT)
 detection     → VICTORY/DEFEAT recognized (subtitle OCR)
 match_complete → match ended, summary printed (Overwolf outcome or subtitle detection)
+mcp_submitted → match submitted to MCP server (if --mcp enabled)
 ```
 
 ## Configuration

@@ -483,3 +483,18 @@ class TestBuildMcpPayload:
         payload = build_mcp_payload(ms)
         enemy = next(p for p in payload["players"] if p["player_name"] == "ENEMY1#9999")
         assert enemy["joined_at"] == 30
+
+    def test_in_party_flag(self):
+        ms = self._make_match()
+        ms.players["LUNAVOD"].in_party = True
+        payload = build_mcp_payload(ms)
+        tank = next(p for p in payload["players"] if p["player_name"] == "LUNAVOD#1234")
+        assert tank["in_party"] is True
+        enemy = next(p for p in payload["players"] if p["player_name"] == "ENEMY1#9999")
+        assert enemy["in_party"] is False
+
+    def test_format_contains_party_marker(self):
+        ms = self._make_match()
+        ms.players["LUNAVOD"].in_party = True
+        output = format_match_state(ms)
+        assert "[P]" in output

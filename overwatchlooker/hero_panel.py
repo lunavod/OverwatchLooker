@@ -547,3 +547,84 @@ def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
     if banned_heroes:
         _logger.info(f"Hero bans detected: {banned_heroes}")
     return banned_heroes
+
+
+# ---------------------------------------------------------------------------
+# Party detection
+# ---------------------------------------------------------------------------
+
+def _make_ally_mask(img_bgr: np.ndarray) -> np.ndarray:
+    """Create a binary mask for ally blue scoreboard pixels."""
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    return ((r < 30) & (g > 40) & (g < 160) &
+            (b > 60) & (b < 210)).astype(np.uint8) * 255
+
+
+def _find_scoreboard_rect(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Find the largest contour in a mask — the scoreboard bounding box."""
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    x, y, w, h = cv2.boundingRect(contours[0])
+    return (x, y, w, h)
+
+
+def _count_rows(img_bgr: np.ndarray, bx: int, by: int, bw: int, bh: int) -> int:
+    """Count player rows via white text density peaks in the right half."""
+    from scipy.ndimage import uniform_filter1d  # type: ignore[import-untyped]
+    from scipy.signal import find_peaks  # type: ignore[import-untyped]
+
+    roi = img_bgr[by:by + bh, bx + bw // 2:bx + bw]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    density = np.mean((gray > 140).astype(float), axis=1)
+    smoothed = uniform_filter1d(density, size=8)
+    peaks, _ = find_peaks(smoothed, height=0.01, distance=bh // 10)
+    return len(peaks)
+
+
+_PARTY_CHECK_WIDTH = 150  # pixels to scan right of the scoreboard
+
+
+def detect_party_slots(img_bgr: np.ndarray,
+                       green_threshold: float = 0.10) -> list[bool]:
+    """Detect which ally scoreboard rows have a green party indicator.
+
+    Scans a strip to the right of the ally scoreboard. Only checks
+    the middle 50% of each row's height to avoid bleed from adjacent rows.
+
+    Returns a list of bools (one per row, True = in party), or empty list
+    if the ally scoreboard is not found.
+    """
+    mask = _make_ally_mask(img_bgr)
+    rect = _find_scoreboard_rect(mask)
+    if rect is None:
+        return []
+
+    bx, by, bw, bh = rect
+    n_rows = _count_rows(img_bgr, bx, by, bw, bh)
+    if n_rows == 0:
+        return []
+
+    row_h = bh // n_rows
+    img_h, img_w = img_bgr.shape[:2]
+    right_x = min(bx + bw + _PARTY_CHECK_WIDTH, img_w)
+
+    results = []
+    for i in range(n_rows):
+        y1 = i * row_h
+        y2 = (i + 1) * row_h if i < n_rows - 1 else bh
+        mid_h = y2 - y1
+        trim = mid_h // 4
+        strip = img_bgr[by + y1 + trim:by + y2 - trim, bx + bw:right_x]
+        if strip.size == 0:
+            results.append(False)
+            continue
+
+        hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
+        green = ((hsv[:, :, 0] > 35) & (hsv[:, :, 0] < 85) &
+                 (hsv[:, :, 1] > 50) & (hsv[:, :, 2] > 50))
+        results.append(float(np.mean(green)) >= green_threshold)
+
+    return results
