@@ -20,7 +20,8 @@ class TestMatchStateCreation:
     def test_empty_state(self):
         ms = MatchState()
         assert ms.players == {}
-        assert ms.tab_screenshots == []
+        assert ms.hero_tabs == {}
+        assert ms.latest_tab is None
         assert ms.rounds == []
         assert ms.result is None
         assert ms.started_at is None

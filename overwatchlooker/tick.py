@@ -19,10 +19,7 @@ import numpy as np
 
 from overwatchlooker.display import print_status
 from overwatchlooker.screenshot import (
-    crop_hero_panel,
-    has_hero_panel,
     is_ow2_tab_screen_bgr,
-    ocr_hero_name,
     save_screenshot,
 )
 from overwatchlooker.chat_listener import ChatState, process_chat_frame
@@ -245,12 +242,8 @@ class TabCaptureSystem:
             if is_tab:
                 png_bytes = cv2.imencode(".png", ctx.frame_bgr)[1].tobytes()
                 saved_path = save_screenshot(png_bytes, tick=ctx.tick)
-                self._app.store_valid_tab(png_bytes, ctx.sim_time, saved_path.name)
-                if has_hero_panel(png_bytes):
-                    crop = crop_hero_panel(png_bytes)
-                    name = ocr_hero_name(crop)
-                    if name:
-                        self._app.store_hero_crop(name, crop)
+                self._app.store_valid_tab(png_bytes, ctx.sim_time, saved_path.name,
+                                         tick=ctx.tick)
                 self._got_valid = True
                 self._state = _TabState.DONE
             else:

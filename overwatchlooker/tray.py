@@ -317,8 +317,9 @@ class App:
         # Reset match state for next match
         self._match_state = MatchState()
 
-        # Print and emit in background thread
+        # Analyze and print in background thread
         def _finalize():
+            self._analyze_snapshot(snapshot)
             summary = format_match_state(snapshot)
             from overwatchlooker.display import print_analysis
             print_analysis(summary)
@@ -327,30 +328,109 @@ class App:
                 "map": snapshot.map_name,
                 "mode": snapshot.mode,
                 "duration_ms": snapshot.duration,
+                "rank_min": snapshot.rank_min or None,
+                "rank_max": snapshot.rank_max or None,
+                "is_wide_match": snapshot.is_wide_match,
             }})
             show_notification("OverwatchLooker",
                               f"Match complete: {snapshot.result.value if snapshot.result else 'UNKNOWN'}")
 
         threading.Thread(target=_finalize, daemon=True).start()
 
-    def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str) -> None:
+    def _analyze_snapshot(self, snapshot: MatchState) -> None:
+        """Run hero panel OCR and rank detection on the snapshot's tab screenshots."""
+        try:
+            import cv2
+            import numpy as np
+            from overwatchlooker.hero_panel import read_hero_panel, detect_rank_range
+
+            local = snapshot.local_player
+
+            # OCR each hero's tab capture
+            for hero_name, capture in snapshot.hero_tabs.items():
+                img = cv2.imdecode(
+                    np.frombuffer(capture.png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if img is None:
+                    continue
+
+                panel_result = read_hero_panel(img)
+                if panel_result and local:
+                    # Find or create the HeroPanel entry for this hero
+                    target_panel = None
+                    for hp in local.hero_panels:
+                        if hp.hero_name == hero_name:
+                            target_panel = hp
+                            break
+                    if target_panel is None:
+                        target_panel = HeroPanel(hero_name=hero_name, crop_png=b"")
+                        local.hero_panels.append(target_panel)
+
+                    target_panel.ocr_stats = [
+                        {"label": s.label, "value": s.value,
+                         "is_featured": s.is_featured}
+                        for s in panel_result.stats
+                    ]
+                    _logger.info(f"Hero panel OCR: {len(panel_result.stats)} stats "
+                                 f"for {hero_name}")
+
+            # Rank detection (from latest tab screenshot)
+            if snapshot.latest_tab:
+                img = cv2.imdecode(
+                    np.frombuffer(snapshot.latest_tab.png_bytes, dtype=np.uint8),
+                    cv2.IMREAD_COLOR)
+                if img is not None:
+                    rank = detect_rank_range(img)
+                    if rank:
+                        snapshot.rank_min = rank.min_rank
+                        snapshot.rank_max = rank.max_rank
+                        snapshot.is_wide_match = rank.is_wide
+                        _logger.info(f"Rank: {rank.min_rank} - {rank.max_rank} "
+                                     f"(wide={rank.is_wide})")
+
+        except Exception as e:
+            _logger.warning(f"Snapshot analysis failed: {e}")
+
+    def store_valid_tab(self, png_bytes: bytes, timestamp: float, filename: str,
+                        tick: int = 0) -> None:
         """Store a valid Tab screenshot (called by TabCaptureSystem).
 
         timestamp is time.monotonic() in live mode, sim_time in replay mode.
+        Stores per-hero (if panel visible) + latest raw for rank detection.
         """
         if self._in_post_detection_cooldown():
             _logger.debug(f"Tab ignored (post-detection cooldown): {filename}")
             return
         with self._lock:
             ms = self._match_state
-            ms.tab_screenshots.append(TabScreenshot(
-                png_bytes=png_bytes, sim_time=timestamp, filename=filename))
-            if len(ms.tab_screenshots) > 2:
-                ms.tab_screenshots.pop(0)
-            tab_count = len(ms.tab_screenshots)
+
+            # Always keep the latest tab for rank detection
+            ms.latest_tab = TabScreenshot(
+                png_bytes=png_bytes, sim_time=timestamp, filename=filename)
+
+            # Check if hero panel is visible and store per-hero
+            local = ms.local_player
+            if local and local.current_hero:
+                hero = local.current_hero
+                existing = ms.hero_tabs.get(hero)
+                if existing is None or tick > existing.tick:
+                    # Only store if the screenshot has a hero panel
+                    from overwatchlooker.hero_panel import _detect_panel
+                    import cv2
+                    import numpy as np
+                    img = cv2.imdecode(
+                        np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if img is not None and _detect_panel(img) is not None:
+                        from overwatchlooker.match_state import HeroTabCapture
+                        ms.hero_tabs[hero] = HeroTabCapture(
+                            hero_name=hero, png_bytes=png_bytes,
+                            tick=tick, filename=filename)
+                        _logger.info(f"Tab stored for {hero}: {filename}")
+                    else:
+                        _logger.debug(f"Tab has no hero panel, skipped for {hero}")
+
         print_status(f"Tab screenshot saved: {filename}")
         self._ws_emit({"type": "tab_capture", "filename": filename,
-                       "timestamp": timestamp, "count": tab_count})
+                       "timestamp": timestamp})
 
     def store_hero_crop(self, name: str, crop: bytes) -> None:
         """Store a hero panel crop into local player's hero_panels."""

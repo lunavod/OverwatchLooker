@@ -23,20 +23,18 @@ class TestMatchStateLifecycle:
     def test_match_state_initially_empty(self, app):
         ms = app._match_state
         assert ms.players == {}
-        assert ms.tab_screenshots == []
+        assert ms.latest_tab is None
         assert ms.result is None
 
     def test_tab_stored_in_match_state(self, app):
         app.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(app._match_state.tab_screenshots) == 1
-        assert app._match_state.tab_screenshots[0].filename == "tab.png"
+        assert app._match_state.latest_tab is not None
+        assert app._match_state.latest_tab.filename == "tab.png"
 
-    def test_tab_capped_at_two(self, app):
+    def test_latest_tab_updated(self, app):
         app.store_valid_tab(b"png1", 1.0, "tab1.png")
         app.store_valid_tab(b"png2", 2.0, "tab2.png")
-        app.store_valid_tab(b"png3", 3.0, "tab3.png")
-        assert len(app._match_state.tab_screenshots) == 2
-        assert app._match_state.tab_screenshots[0].filename == "tab2.png"
+        assert app._match_state.latest_tab.filename == "tab2.png"
 
     def test_hero_switch_creates_player(self, app):
         app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
@@ -290,7 +288,7 @@ class TestPostSubmitCooldown:
         app._on_detection("VICTORY")
         # Tick loop is at 1000, cooldown until 1300 — should ignore
         app.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(app._match_state.tab_screenshots) == 0
+        assert app._match_state.latest_tab is None  # cooldown blocked it
 
     @patch("overwatchlooker.tray.show_notification")
     @patch("overwatchlooker.display.print_analysis")
@@ -301,14 +299,14 @@ class TestPostSubmitCooldown:
         # Advance tick past cooldown
         app._tick_loop._current_tick = 1300
         app.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(app._match_state.tab_screenshots) == 1
+        assert app._match_state.latest_tab is not None
 
     def test_no_cooldown_without_tick_loop(self):
         """If tick loop is not running (e.g. image mode), no cooldown applies."""
         from overwatchlooker.tray import App
         a = App()
         a.store_valid_tab(b"png", 1.0, "tab.png")
-        assert len(a._match_state.tab_screenshots) == 1
+        assert a._match_state.latest_tab is not None
 
 
 class TestAnalysisFlow:

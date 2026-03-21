@@ -113,6 +113,15 @@ class TabScreenshot:
 
 
 @dataclass
+class HeroTabCapture:
+    """A tab screenshot captured while playing a specific hero."""
+    hero_name: str
+    png_bytes: bytes
+    tick: int
+    filename: str
+
+
+@dataclass
 class MatchState:
     # Match-level (from Overwolf)
     map_name: str = ""
@@ -128,8 +137,14 @@ class MatchState:
     rounds: list[RoundInfo] = field(default_factory=list)
     pseudo_match_id: str = ""
 
-    # From Tab capture
-    tab_screenshots: list[TabScreenshot] = field(default_factory=list)  # capped at 2
+    # Rank (from tab screenshot OCR)
+    rank_min: str = ""       # e.g. "Bronze 2"
+    rank_max: str = ""       # e.g. "Gold 1"
+    is_wide_match: bool | None = None
+
+    # From Tab capture — one per hero (latest with visible panel), plus latest raw for rank
+    hero_tabs: dict[str, HeroTabCapture] = field(default_factory=dict)  # hero_name -> capture
+    latest_tab: TabScreenshot | None = None  # most recent tab screenshot (for rank detection)
 
     # Players keyed by UPPERCASE player_name
     players: dict[str, PlayerState] = field(default_factory=dict)
@@ -237,9 +252,13 @@ class MatchState:
             "rounds": [{"started": r.started_at, "ended": r.ended_at}
                        for r in self.rounds],
             "pseudo_match_id": self.pseudo_match_id,
+            "rank_min": self.rank_min or None,
+            "rank_max": self.rank_max or None,
+            "is_wide_match": self.is_wide_match,
             "local_team": self._local_team,
-            "tab_screenshots": [{"file": t.filename, "sim_time": t.sim_time}
-                                for t in self.tab_screenshots],
+            "hero_tabs": {name: {"hero": c.hero_name, "tick": c.tick, "file": c.filename}
+                         for name, c in self.hero_tabs.items()},
+            "latest_tab": self.latest_tab.filename if self.latest_tab else None,
             "players": players,
         }
 
@@ -324,6 +343,13 @@ def format_match_state(match: MatchState) -> str:
     dur_str = _format_duration(match.duration)
     lines.append(f"Result: {result_str} | Duration: {dur_str}")
 
+    # Rank
+    if match.rank_min and match.rank_max:
+        rank_str = f"Rank: {match.rank_min} — {match.rank_max}"
+        if match.is_wide_match:
+            rank_str += " (WIDE)"
+        lines.append(rank_str)
+
     # Rounds
     if match.rounds:
         round_durs = []
@@ -373,6 +399,17 @@ def format_match_state(match: MatchState) -> str:
         lines.append("\u2500\u2500 UNKNOWN TEAM \u2500\u2500")
         for p in sorted(unknown_team, key=_sort_key):
             lines.append(_player_line(p))
+
+    # Hero stats (from panel OCR)
+    local = match.local_player
+    if local and local.hero_panels:
+        for hp in local.hero_panels:
+            if hp.ocr_stats:
+                lines.append("")
+                lines.append(f"\u2500\u2500 {hp.hero_name} Stats \u2500\u2500")
+                for stat in hp.ocr_stats:
+                    prefix = "\u2605 " if stat.get("is_featured") else "  "
+                    lines.append(f"{prefix}{stat.get('label', '?')}: {stat.get('value', '?')}")
 
     lines.append("\u2550" * 23)
     return "\n".join(lines)

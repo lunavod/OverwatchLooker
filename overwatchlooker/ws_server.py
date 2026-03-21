@@ -74,7 +74,7 @@ class EventBus:
                 self._state["analyzing"] = False
                 self._state["last_analysis"] = event.get("data")
             elif t == "tab_capture":
-                self._state["valid_tabs"] = event.get("count", 0)
+                self._state["valid_tabs"] = self._state.get("valid_tabs", 0) + 1
             elif t == "hero_crop":
                 crops = self._state.setdefault("hero_crops", [])
                 name = event.get("name")

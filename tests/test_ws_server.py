@@ -89,14 +89,14 @@ class TestEventBusState:
 
     def test_tab_capture_event(self):
         bus = EventBus()
-        bus.emit({"type": "tab_capture", "filename": "tab_001.png", "timestamp": 5.0, "count": 1})
+        bus.emit({"type": "tab_capture", "filename": "tab_001.png", "timestamp": 5.0})
         state = bus.get_state()
         assert state["valid_tabs"] == 1
 
-    def test_tab_capture_count_updates(self):
+    def test_tab_capture_count_increments(self):
         bus = EventBus()
-        bus.emit({"type": "tab_capture", "filename": "tab_001.png", "timestamp": 5.0, "count": 1})
-        bus.emit({"type": "tab_capture", "filename": "tab_002.png", "timestamp": 10.0, "count": 2})
+        bus.emit({"type": "tab_capture", "filename": "tab_001.png", "timestamp": 5.0})
+        bus.emit({"type": "tab_capture", "filename": "tab_002.png", "timestamp": 10.0})
         state = bus.get_state()
         assert state["valid_tabs"] == 2
 

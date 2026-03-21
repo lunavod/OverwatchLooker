@@ -379,10 +379,10 @@ class TestPlayerLeaveAndReplace:
 
 
 class TestTabScreenshots:
-    def test_tab_stored(self, scenario):
-        assert len(scenario.tab_screenshots) == 1
-        assert scenario.tab_screenshots[0].filename == "tab_120s.png"
-        assert scenario.tab_screenshots[0].sim_time == 120.0
+    def test_latest_tab_stored(self, scenario):
+        assert scenario.latest_tab is not None
+        assert scenario.latest_tab.filename == "tab_120s.png"
+        assert scenario.latest_tab.sim_time == 120.0
 
 
 class TestEnemyPlayers:
