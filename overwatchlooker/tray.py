@@ -119,6 +119,13 @@ class App:
         import sys
         os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
         os.environ["GLOG_minloglevel"] = "2"
+        # Suppress `where ccache` noise on Windows by patching subprocess
+        import subprocess
+        _real_check_output = subprocess.check_output
+        def _quiet_check_output(cmd, *args, **kwargs):
+            kwargs.setdefault("stderr", subprocess.DEVNULL)
+            return _real_check_output(cmd, *args, **kwargs)
+        subprocess.check_output = _quiet_check_output
         # Redirect stderr to suppress C-level noise from paddle init
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
@@ -129,6 +136,7 @@ class App:
             _logger.warning(f"OCR model preload failed: {e}")
         finally:
             sys.stderr = old_stderr
+            subprocess.check_output = _real_check_output
 
     def _register_commands(self, bus: EventBus) -> None:
         """Register command handlers on the event bus."""
