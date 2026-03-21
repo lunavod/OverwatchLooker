@@ -536,19 +536,21 @@ class App:
         tab_system = TabCaptureSystem(self, fps=fps)
         self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
 
-        subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
-        subtitle_system = SubtitleSystem(on_match=self._on_detection,
-                                         on_detected=self._on_detected,
-                                         on_hero_switch=self._on_hero_switch,
-                                         transcript=self._use_transcript,
-                                         detection_delay_ticks=0)
-        self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
-        self._detector = subtitle_system
-        self._subtitle_system = subtitle_system
+        # Subtitle + chat OCR only when Overwolf is not connected
+        if not self._overwolf_queue:
+            subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+            subtitle_system = SubtitleSystem(on_match=self._on_detection,
+                                             on_detected=self._on_detected,
+                                             on_hero_switch=self._on_hero_switch,
+                                             transcript=self._use_transcript,
+                                             detection_delay_ticks=0)
+            self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
+            self._detector = subtitle_system
+            self._subtitle_system = subtitle_system
 
-        chat_system = ChatSystem(on_player_change=self._on_player_change)
-        self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
-        self._chat_system = chat_system
+            chat_system = ChatSystem(on_player_change=self._on_player_change)
+            self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
+            self._chat_system = chat_system
 
         # Overwolf event system (drains queue each tick)
         if self._overwolf_queue:
@@ -625,23 +627,26 @@ class App:
             tab_system = TabCaptureSystem(self, fps=fps)
             self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
 
-            subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
-            subtitle_system = SubtitleSystem(on_match=self._on_detection,
-                                             on_detected=self._on_detected,
-                                             on_hero_switch=self._on_hero_switch,
-                                             transcript=self._use_transcript,
-                                             detection_delay_ticks=0)
-            self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
-            self._detector = subtitle_system
-            self._subtitle_system = subtitle_system
-
-            chat_system = ChatSystem(on_player_change=self._on_player_change)
-            self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
-            self._chat_system = chat_system
-
             # Replay Overwolf events if recording has them
             overwolf_events_path = self._replay_source.overwolf_events_path
-            if overwolf_events_path and overwolf_events_path.exists():
+            has_overwolf_replay = overwolf_events_path and overwolf_events_path.exists()
+            # Subtitle + chat OCR only when no Overwolf events in recording
+            if not has_overwolf_replay:
+                subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+                subtitle_system = SubtitleSystem(on_match=self._on_detection,
+                                                 on_detected=self._on_detected,
+                                                 on_hero_switch=self._on_hero_switch,
+                                                 transcript=self._use_transcript,
+                                                 detection_delay_ticks=0)
+                self._tick_loop.register(subtitle_system.on_tick, every_n_ticks=subtitle_interval)
+                self._detector = subtitle_system
+                self._subtitle_system = subtitle_system
+
+                chat_system = ChatSystem(on_player_change=self._on_player_change)
+                self._tick_loop.register(chat_system.on_tick, every_n_ticks=subtitle_interval)
+                self._chat_system = chat_system
+
+            if has_overwolf_replay:
                 replay_queue = OverwolfEventQueue()
                 recorded_events = load_overwolf_events(overwolf_events_path)
                 replay_source_ow = ReplayOverwolfSource(recorded_events, replay_queue)

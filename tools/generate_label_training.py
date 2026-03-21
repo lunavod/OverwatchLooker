@@ -4,7 +4,7 @@ Config-Medium font, ALL CAPS, A-Z + space only.
 Varied backgrounds and text colors for robustness.
 
 Usage:
-    uv run python tools/generate_label_training.py [--count N] [--output DIR]
+    uv run python tools/generate_label_training.py --font /path/to/Config-Medium.ttf [--count N] [--output DIR]
 """
 
 import argparse
@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-FONT_PATH = r"C:\Users\yegor\Downloads\config\Config-Medium.ttf"
+FONT_PATH = None  # Set via --font argument
 
 # Only A-Z and space
 CHARS = string.ascii_uppercase + " "
@@ -271,10 +271,15 @@ def generate_charset_coverage(fonts, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate panel label training data")
-    parser.add_argument("--count", type=int, default=69000)
-    parser.add_argument("--output", type=Path, default=Path("training_data/panel_labels_v2"))
+    parser.add_argument("--font", type=str, required=True,
+                        help="Path to Config-Medium.ttf font file")
+    parser.add_argument("--count", type=int, default=5000)
+    parser.add_argument("--output", type=Path, default=Path("training_data/panel_labels"))
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    global FONT_PATH
+    FONT_PATH = args.font
 
     random.seed(args.seed)
     np.random.seed(args.seed)
