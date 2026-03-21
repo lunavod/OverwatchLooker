@@ -14,7 +14,9 @@ from PIL import Image
 
 from pytesseract_api import image_to_string as _tess_image_to_string, TessPageSegMode
 
-from overwatchlooker.config import MONITOR_INDEX, SCREENSHOT_MAX_AGE_SECONDS
+# Legacy constants kept for backward compat with unused functions
+_MONITOR_INDEX = 1
+_SCREENSHOT_MAX_AGE_SECONDS = 120.0
 
 # Tesseract C API paths (ctypes, no subprocess)
 _TESS_LIB = r"C:\Program Files\Tesseract-OCR\libtesseract-5.dll"
@@ -91,7 +93,7 @@ def get_latest_screenshot() -> Path | None:
         return None
     latest = pngs[0]
     age = (datetime.now() - datetime.fromtimestamp(latest.stat().st_mtime)).total_seconds()
-    if age > SCREENSHOT_MAX_AGE_SECONDS:
+    if age > _SCREENSHOT_MAX_AGE_SECONDS:
         return None
     return latest
 
@@ -339,7 +341,7 @@ def capture_monitor() -> bytes:
             return result
     # Fallback to full monitor capture
     with mss.mss() as sct:
-        img = sct.grab(sct.monitors[MONITOR_INDEX])
+        img = sct.grab(sct.monitors[_MONITOR_INDEX])
         png = mss.tools.to_png(img.rgb, img.size)
         assert png is not None
         return png
