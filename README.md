@@ -152,7 +152,7 @@ The app can record gameplay sessions for later replay and analysis.
 
 **Manual recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Overwolf GEP events (if `--overwolf` is active) are stored as JSONL in a `.overwolf.jsonl` file. Produces `recording.mp4` + `recording.meta` (+ `recording.overwolf.jsonl`) in timestamped directories under `recordings/`.
 
-**Auto-recording:** With `--auto-recording`, recording starts automatically on match start and stops after a configurable tail period (default 60s, set via `--auto-recording-tail`). Saved to `recordings_auto/`.
+**Auto-recording:** With `--auto-recording`, recording starts automatically on match start and stops after a configurable tail period (default 60s, set via `--auto-recording-tail`). Saved to `recordings_auto/`. A `match_info.json` file is written at match end with map, mode, result, team side, score progression, duration, and start time.
 
 **Replay:** Use `--replay <dir>` or `--replay <file.mp4>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 

@@ -427,57 +427,73 @@ class ChatSystem:
 
 
 class ControlScoreSystem:
-    """Detects Control mode round score from the top-center HUD.
+    """Detects Control/Flashpoint round score from the top-center HUD.
 
-    Looks for filled blue/red score circles. Runs every 2 seconds.
+    Looks for filled blue/red score indicators (circles for Control,
+    diamonds for Flashpoint). Runs every 2 seconds.
     Results within 5s before or 15s after a death event are invalidated
     (kill cam shows misleading HUD).
     """
 
-    # ROI at 1080p — includes higher position when score reaches 2
-    _ROI_Y = (25, 105)
-    _ROI_X = (0.38, 0.62)
+    # Fixed indicator center positions (fractions of screen size)
+    # Flashpoint: 3 diamonds per side
+    _FP_BLUE_X = [0.3594, 0.3812, 0.4031]
+    _FP_RED_X = [0.5969, 0.6188, 0.6406]
+    _FP_Y = [0.1069, 0.0699]  # with banner (lower) / without banner (higher)
+    # Control: 2 circles per side
+    _CTRL_BLUE_X = [0.384, 0.413]
+    _CTRL_RED_X = [0.587, 0.616]
+    _CTRL_Y = [0.0769]  # TODO: find banner/no-banner Y positions
 
-    # HSV thresholds for filled score circles
-    _BLUE_H = (85, 115)
-    _RED_H_LOW = 8
-    _RED_H_HIGH = 155
-    _SV_MIN = 150
+    # Patch sampling: (2*R+1)x(2*R+1) patch at each position
+    _PATCH_R = 2
+    _MAX_STD = 5.0  # max temporal std — HUD center is opaque (std~0), background shifts
 
-    _BLUE_X_FRAC = 0.22
-    _RED_X_FRAC = 0.78
-
-    # Contour filters (1080p baseline)
-    _MIN_AREA = 400
-    _MAX_AREA = 1200
-    _MIN_CIRCULARITY = 0.70
-    _ASPECT_RANGE = (0.7, 1.4)
-    _SIZE_RANGE = (20, 45)
+    # Frame buffer for temporal variance check
+    _BUFFER_SIZE = 10
 
     # Death invalidation windows (seconds)
     _DEATH_PRE = 5.0
     _DEATH_POST = 15.0
 
-    def __init__(self, on_score_change: Callable[[list[tuple[int, int]]], None] | None = None):
+    def __init__(self, app: Any, on_score_change: Callable[[list[tuple[int, int]]], None] | None = None):
+        self._app = app
         self._on_score_change = on_score_change
         self._active = False
-        self._history: list[tuple[float, int, int]] = []  # (sim_time, blue, red)
-        self._death_times: list[float] = []  # sim_times of death events
+        self._max_score = 2
+        self._blue_x: list[float] = []
+        self._red_x: list[float] = []
+        self._death_times: list[float] = []
         self._last_confirmed: tuple[int, int] = (0, 0)
         self._transitions: list[tuple[int, int]] = [(0, 0)]
+        self._frame_buffer: list[np.ndarray] = []
 
-    def start(self) -> None:
+    def start(self, max_score: int = 2) -> None:
         self._active = True
+        self._max_score = max_score
+        if max_score == 3:  # Flashpoint
+            self._blue_x = self._FP_BLUE_X
+            self._red_x = self._FP_RED_X
+            self._y_positions = self._FP_Y
+        else:  # Control
+            self._blue_x = self._CTRL_BLUE_X
+            self._red_x = self._CTRL_RED_X
+            self._y_positions = self._CTRL_Y
+        self._frame_buffer.clear()
 
     def stop(self) -> None:
         self._active = False
 
     def reset_match(self) -> None:
         self._active = False
-        self._history.clear()
+        self._max_score = 2
+        self._blue_x = []
+        self._red_x = []
+        self._y_positions = []
         self._death_times.clear()
         self._last_confirmed = (0, 0)
         self._transitions = [(0, 0)]
+        self._frame_buffer.clear()
 
     def record_death(self, sim_time: float) -> None:
         """Record a death event time for invalidation."""
@@ -490,79 +506,70 @@ class ControlScoreSystem:
                 return False
         return True
 
-    _MIN_FILL_RATIO = 0.65  # reject rings (fill ~0.3) vs solid circles (~1.0)
+    def _is_filled(self, fx: float, color: str) -> bool:
+        """Check if an indicator at screen fraction (fx, fy) is filled.
 
-    def _count_circles(self, mask: np.ndarray, scale: float) -> int:
-        min_area = int(self._MIN_AREA * scale * scale)
-        max_area = int(self._MAX_AREA * scale * scale)
-        min_size = int(self._SIZE_RANGE[0] * scale)
-        max_size = int(self._SIZE_RANGE[1] * scale)
+        Samples a small patch at each Y position across all buffered frames.
+        A filled HUD indicator has:
+        - Correct HSV color (blue or red)
+        - Near-zero temporal variance (opaque HUD center is identical every frame)
+        """
+        h, w = self._frame_buffer[0].shape[:2]
+        r = self._PATCH_R
+        cx = int(fx * w)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL,
-                                       cv2.CHAIN_APPROX_SIMPLE)
-        n = 0
-        for c in contours:
-            area = cv2.contourArea(c)
-            perim = cv2.arcLength(c, True)
-            if perim == 0:
+        for fy in self._y_positions:
+            cy = int(fy * h)
+            if cy - r < 0 or cy + r + 1 > h or cx - r < 0 or cx + r + 1 > w:
                 continue
-            circularity = 4 * np.pi * area / (perim * perim)
-            x, y, cw, ch = cv2.boundingRect(c)
-            if not (circularity > self._MIN_CIRCULARITY
-                    and min_area < area < max_area
-                    and self._ASPECT_RANGE[0] < cw / ch < self._ASPECT_RANGE[1]
-                    and min_size < cw < max_size):
+
+            # Temporal variance check
+            patches = [f[cy - r:cy + r + 1, cx - r:cx + r + 1]
+                       for f in self._frame_buffer]
+            stack = np.stack(patches, axis=0).astype(float)
+            std = float(np.mean(np.std(stack, axis=0)))
+            if std > self._MAX_STD:
                 continue
-            # Check interior fill to distinguish solid circles from rings
-            fill_mask = np.zeros(cleaned.shape, dtype=np.uint8)
-            cv2.drawContours(fill_mask, [c], -1, 255, -1)
-            filled_pixels = int(np.sum(fill_mask > 0))
-            actual_pixels = int(np.sum(cleaned[y:y + ch, x:x + cw] > 0))
-            if filled_pixels > 0 and actual_pixels / filled_pixels >= self._MIN_FILL_RATIO:
-                n += 1
-        return n
+
+            # Color check on middle frame
+            mid_hsv = cv2.cvtColor(
+                self._frame_buffer[len(self._frame_buffer) // 2],
+                cv2.COLOR_BGR2HSV)
+            patch = mid_hsv[cy - r:cy + r + 1, cx - r:cx + r + 1]
+            s = float(np.mean(patch[:, :, 1]))
+            v = float(np.mean(patch[:, :, 2]))
+            hue = float(np.mean(patch[:, :, 0]))
+
+            if color == "blue" and s > 170 and v > 150 and 80 < hue < 120:
+                return True
+            if color == "red" and s > 150 and v > 150 and (hue > 140 or hue < 15):
+                return True
+
+        return False
 
     def on_tick(self, ctx: TickContext) -> None:
         if not self._active:
             return
 
-        frame = ctx.frame_bgr
-        h, w = frame.shape[:2]
-        scale = h / 1080.0
+        # Don't scan until at least one round has started
+        if self._app is not None:
+            ms = self._app._match_state
+            if not ms.rounds:
+                return
 
-        y1 = int(self._ROI_Y[0] * scale)
-        y2 = int(self._ROI_Y[1] * scale)
-        x1 = int(w * self._ROI_X[0])
-        x2 = int(w * self._ROI_X[1])
+        # Buffer full frames (we sample specific positions, not ROIs)
+        self._frame_buffer.append(ctx.frame_bgr.copy())
+        if len(self._frame_buffer) > self._BUFFER_SIZE:
+            self._frame_buffer.pop(0)
+        if len(self._frame_buffer) < self._BUFFER_SIZE:
+            return
 
-        roi = frame[y1:y2, x1:x2]
-        rw = roi.shape[1]
-
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-
-        blue_mask = ((hsv[:, :, 0] > self._BLUE_H[0]) &
-                     (hsv[:, :, 0] < self._BLUE_H[1]) &
-                     (hsv[:, :, 1] > self._SV_MIN) &
-                     (hsv[:, :, 2] > self._SV_MIN)).astype(np.uint8) * 255
-
-        red_mask = (((hsv[:, :, 0] > self._RED_H_HIGH) |
-                     (hsv[:, :, 0] < self._RED_H_LOW)) &
-                    (hsv[:, :, 1] > self._SV_MIN) &
-                    (hsv[:, :, 2] > self._SV_MIN)).astype(np.uint8) * 255
-
-        blue_region = blue_mask[:, :int(rw * self._BLUE_X_FRAC)]
-        red_region = red_mask[:, int(rw * self._RED_X_FRAC):]
-
-        blue_score = self._count_circles(blue_region, scale)
-        red_score = self._count_circles(red_region, scale)
-
-        # Clamp to valid range
-        blue_score = min(blue_score, 2)
-        red_score = min(red_score, 2)
-
-        self._history.append((ctx.sim_time, blue_score, red_score))
+        blue_score = min(
+            sum(1 for fx in self._blue_x if self._is_filled(fx, "blue")),
+            self._max_score)
+        red_score = min(
+            sum(1 for fx in self._red_x if self._is_filled(fx, "red")),
+            self._max_score)
 
         # Only accept if this reading is valid (not in death window)
         if not self._is_valid_time(ctx.sim_time):
@@ -575,7 +582,7 @@ class ControlScoreSystem:
                     and score[1] >= self._last_confirmed[1]):
                 self._last_confirmed = score
                 self._transitions.append(score)
-                _logger.info(f"Control score: {score[0]}-{score[1]} "
+                _logger.info(f"Score: {score[0]}-{score[1]} "
                              f"(tick={ctx.tick}, t={ctx.sim_time:.1f}s)")
                 if self._on_score_change:
                     self._on_score_change(list(self._transitions))

@@ -118,6 +118,7 @@ class App:
         self._auto_recording = auto_recording
         self._auto_recording_tail = auto_recording_tail
         self._auto_recording_active = False  # True while auto-recording is in progress
+        self._auto_recording_dir: Path | None = None  # current auto-recording directory
         self._auto_stop_timer: threading.Timer | None = None
         self._pending_analysis = threading.Event()
         self._pending_analysis.set()  # no analysis pending initially
@@ -255,9 +256,7 @@ class App:
         elif isinstance(event, GameModeUpdate):
             ms.mode = event.name
             ms.mode_code = event.code
-            if (event.name == "Control" and self._control_score_system
-                    and ms.game_type != GameType.RANKED):
-                self._control_score_system.start()
+            self._try_start_score_system(event.name, ms.game_type)
             if ms.map_name.startswith("Unknown ("):
                 _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
                 if event.name in _REAL_MODES:
@@ -266,11 +265,7 @@ class App:
                                       f"Please report!")
         elif isinstance(event, GameTypeUpdate):
             ms.game_type = event.game_type
-            # Start control score if mode already known and not ranked
-            if (ms.mode == "Control" and self._control_score_system
-                    and event.game_type != GameType.RANKED
-                    and not self._control_score_system._active):
-                self._control_score_system.start()
+            self._try_start_score_system(ms.mode, event.game_type)
         elif isinstance(event, QueueTypeUpdate):
             ms.queue_type = event.queue_type
         elif isinstance(event, PseudoMatchIdUpdate):
@@ -415,12 +410,17 @@ class App:
 
         # Finalize control score — if neither team reached 2, infer from result
         if self._control_score_system and ms.control_score:
+            max_s = self._control_score_system._max_score
             last = ms.control_score[-1]
-            if last[0] < 2 and last[1] < 2 and ms.result:
+            if last[0] < max_s and last[1] < max_s and ms.result:
                 if ms.result == MatchResult.VICTORY:
-                    ms.control_score.append((2, last[1]))
+                    ms.control_score.append((max_s, last[1]))
                 elif ms.result == MatchResult.DEFEAT:
-                    ms.control_score.append((last[0], 2))
+                    ms.control_score.append((last[0], max_s))
+
+        # Write match_info.json to auto-recording directory
+        if self._auto_recording_dir and not self._replay_source:
+            self._write_match_info(ms)
 
         _logger.info(f"Match end finalizing: hero_tabs={list(ms.hero_tabs.keys())}")
         ms.dump_to_log("MatchEnd")
@@ -609,6 +609,7 @@ class App:
             base_path = rec_dir / "recording"
             info = self._engine.start_recording(str(base_path))
             self._auto_recording_active = True
+            self._auto_recording_dir = rec_dir
             self._recording = True
             # Record Overwolf events alongside video
             if self._overwolf_system:
@@ -677,6 +678,39 @@ class App:
                 )
                 writer.write(RosterUpdate(slot=p.slot, entry=entry, timestamp=ts), frame)
 
+    def _write_match_info(self, ms: MatchState) -> None:
+        """Write match_info.json to the auto-recording directory."""
+        if not self._auto_recording_dir:
+            return
+        try:
+            import json
+            from datetime import datetime, timezone
+
+            started_dt = None
+            if ms.started_at:
+                started_dt = datetime.fromtimestamp(
+                    ms.started_at / 1000, tz=timezone.utc).isoformat()
+
+            info = {
+                "map": ms.map_name or None,
+                "mode": ms.mode or None,
+                "result": ms.result.value if ms.result else None,
+                "initial_team_side": ms.initial_team_side or None,
+                "score_progression": (
+                    [f"{b}:{r}" for b, r in ms.control_score[1:]]
+                    if ms.control_score and len(ms.control_score) > 1
+                    else None
+                ),
+                "duration_s": ms.duration // 1000 if ms.duration else None,
+                "started_at": started_dt,
+            }
+
+            path = self._auto_recording_dir / "match_info.json"
+            path.write_text(json.dumps(info, indent=2), encoding="utf-8")
+            _logger.info(f"Wrote match_info.json to {self._auto_recording_dir}")
+        except Exception as e:
+            _logger.warning(f"Failed to write match_info.json: {e}")
+
     def _auto_recording_schedule_stop(self) -> None:
         """Schedule auto-recording stop after the configured tail duration."""
         if not self._auto_recording_active:
@@ -697,6 +731,7 @@ class App:
         try:
             self._engine.stop_recording()
             self._auto_recording_active = False
+            self._auto_recording_dir = None
             self._recording = False
             if self._overwolf_system:
                 self._overwolf_system.clear_writer()
@@ -822,6 +857,16 @@ class App:
                 local.hero_panels.append(HeroPanel(hero_name=name, crop_png=crop))
             _logger.info(f"Stored hero crop: {name}")
             self._ws_emit({"type": "hero_crop", "name": name})
+
+    _SCORE_MODES: dict[str, int] = {"Control": 2, "Flashpoint": 3}
+
+    def _try_start_score_system(self, mode: str, game_type: GameType | None) -> None:
+        """Start score detection if mode is Control/Flashpoint and not ranked."""
+        if (self._control_score_system
+                and mode in self._SCORE_MODES
+                and game_type != GameType.RANKED
+                and not self._control_score_system._active):
+            self._control_score_system.start(max_score=self._SCORE_MODES[mode])
 
     def _on_control_score_change(self, transitions: list[tuple[int, int]]) -> None:
         """Callback when control score changes."""
@@ -999,8 +1044,8 @@ class App:
         self._tick_loop.register(team_side.on_tick, every_n_ticks=3)
         self._team_side_system = team_side
 
-        control_score = ControlScoreSystem(on_score_change=self._on_control_score_change)
-        self._tick_loop.register(control_score.on_tick, every_n_ticks=int(fps * 2))
+        control_score = ControlScoreSystem(self, on_score_change=self._on_control_score_change)
+        self._tick_loop.register(control_score.on_tick, every_n_ticks=2)
         self._control_score_system = control_score
 
         # Subtitle + chat OCR only when Overwolf is not connected
@@ -1100,8 +1145,8 @@ class App:
             self._tick_loop.register(team_side.on_tick, every_n_ticks=3)
             self._team_side_system = team_side
 
-            control_score = ControlScoreSystem(on_score_change=self._on_control_score_change)
-            self._tick_loop.register(control_score.on_tick, every_n_ticks=int(fps * 2))
+            control_score = ControlScoreSystem(self, on_score_change=self._on_control_score_change)
+            self._tick_loop.register(control_score.on_tick, every_n_ticks=2)
             self._control_score_system = control_score
 
             # Replay Overwolf events if recording has them
