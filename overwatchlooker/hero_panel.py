@@ -46,7 +46,7 @@ def _get_labels_model():
     global _labels_model
     if _labels_model is None:
         _suppress_paddle_warnings()
-        from paddlex import create_model
+        from paddlex import create_model  # type: ignore[import-untyped]
         _labels_model = create_model(
             "PP-OCRv5_server_rec",
             model_dir=str(_MODELS_DIR / "panel_labels"),
@@ -59,7 +59,7 @@ def _get_values_model():
     global _values_model
     if _values_model is None:
         _suppress_paddle_warnings()
-        from paddlex import create_model
+        from paddlex import create_model  # type: ignore[import-untyped]
         _values_model = create_model(
             "PP-OCRv5_server_rec",
             model_dir=str(_MODELS_DIR / "panel_values"),
@@ -72,7 +72,7 @@ def _get_featured_model():
     global _featured_model
     if _featured_model is None:
         _suppress_paddle_warnings()
-        from paddlex import create_model
+        from paddlex import create_model  # type: ignore[import-untyped]
         _featured_model = create_model(
             "PP-OCRv5_server_rec",
             model_dir=str(_MODELS_DIR / "panel_featured"),
@@ -85,7 +85,7 @@ def _get_side_model():
     global _side_model
     if _side_model is None:
         _suppress_paddle_warnings()
-        from paddlex import create_model
+        from paddlex import create_model  # type: ignore[import-untyped]
         _side_model = create_model(
             "PP-OCRv5_server_rec",
             model_dir=str(_MODELS_DIR / "team_side"),
@@ -283,8 +283,8 @@ def _detect_featured_box(panel: np.ndarray) -> tuple[int, int, int, int] | None:
         (b > r)
     ).astype(np.uint8) * 255
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)  # type: ignore[assignment]
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)  # type: ignore[assignment]
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None

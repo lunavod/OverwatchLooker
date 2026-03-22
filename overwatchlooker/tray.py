@@ -57,7 +57,7 @@ _RECORDINGS_DIR = Path(__file__).parent.parent / "recordings"
 # Eagerly load pywintypes on the main thread — pywin32's DLL can fail to load
 # in worker threads if it hasn't been initialized yet (transitive dep of mcp SDK).
 try:
-    import pywintypes  # noqa: F401
+    import pywintypes  # type: ignore[import-untyped]  # noqa: F401
 except ImportError:
     pass
 
@@ -143,7 +143,7 @@ class App:
         def _quiet_check_output(cmd, *args, **kwargs):
             kwargs.setdefault("stderr", subprocess.DEVNULL)
             return _real_check_output(cmd, *args, **kwargs)
-        subprocess.check_output = _quiet_check_output
+        subprocess.check_output = _quiet_check_output  # type: ignore[assignment]
         # Redirect stderr to suppress C-level noise from paddle init
         old_stderr = sys.stderr
         sys.stderr = io.StringIO()
@@ -527,13 +527,13 @@ class App:
 
                 # Hero bans (competitive only)
                 from overwatchlooker.overwolf import GameType
+                assert img is not None
                 if snapshot.game_type == GameType.RANKED:
                     bans = detect_hero_bans(img)
                     if bans:
                         snapshot.hero_bans = bans
 
                 # Party detection — map green indicators to ally players by role order
-                assert img is not None
                 party_flags = detect_party_slots(img)
                 if party_flags:
                     from overwatchlooker.match_state import TeamSide
