@@ -47,7 +47,7 @@ Stat rows below the hero portrait follow a repeating pattern: bold white value, 
 
 ## OCR Models
 
-Two separate PaddleOCR recognition models, finetuned from PP-OCRv5 server rec (PPHGNetV2_B4 backbone + SVTR neck + MultiHead CTC/NRTR):
+Three separate PaddleOCR recognition models, finetuned from PP-OCRv5 server rec (PPHGNetV2_B4 backbone + SVTR neck + MultiHead CTC/NRTR):
 
 ### Labels Model (v1)
 
@@ -67,11 +67,29 @@ Two separate PaddleOCR recognition models, finetuned from PP-OCRv5 server rec (P
 - **Accuracy:** ~100% on synthetic val, **100% on real game screenshots** with proper cropping
 - **Inference:** Pad value row ±20px vertically, then crop to text bounds (bright pixels > 120, 10px padding) before feeding to model. This is critical — without cropping, thin glyphs like `1` are lost when the 869px strip is resized to 320px
 
-### Why Two Models
+### Featured Model
 
-Labels and values use completely different fonts (Config Medium vs Futura), so a single model would need to learn two unrelated typefaces. Splitting them also eliminates cross-domain confusion:
+- **Font:** Big Noodle Titling Oblique ([Resike/Overwatch](https://github.com/Resike/Overwatch/tree/master/Fonts))
+- **Character set:** 0-9 + % + , + . + : (14 characters, same as values)
+- **Training data:** 5,000 synthetic samples, white text on black background, font sizes 48-96px (larger than regular values, weighted toward 80px for 4K). Heavy oversampling of timer patterns (MM:SS) and 0-vs-7 confusable pairs
+- **Training config:** RecAug pre-applied offline, 100 epochs, LR 5e-5, batch 64
+- **Accuracy:** 99.8% on synthetic val, correct on real screenshots including timer values
+- **Inference:** Same as values model — crop to text bounds before feeding to model
+
+The featured stat uses a completely different font from the regular stat values (Big Noodle Titling vs Futura No2 Demi Bold). The Futura-trained values model misread `01:09` as `71:` because the italic Noodle `0` looks like a Futura `7`.
+
+### Why Three Models
+
+The hero panel uses three different fonts across four text elements:
+- **Config Medium** — stat labels (CHARGE KILLS, FIRE STRIKE ACCURACY...)
+- **Futura No2 Demi Bold** — stat values (5, 3, 29%...)
+- **Big Noodle Titling** — featured stat value (01:09, 5, 29%...)
+- **Unknown** — hero name (REINHARDT) — not OCR'd, comes from Overwolf roster
+
+Splitting by font eliminates cross-domain confusion:
 - No `0` vs `O` ambiguity (each model only knows one)
 - No `1` vs `I` or `l` confusion
+- No `0` vs `7` confusion from font style differences
 - Restricted character sets converge faster and achieve higher accuracy
 
 ### Key Findings from Training

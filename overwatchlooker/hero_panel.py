@@ -23,6 +23,7 @@ _HERO_ASSETS_DIR = _ASSETS_DIR / "heroes"
 # Lazy-loaded models
 _labels_model = None
 _values_model = None
+_featured_model = None
 
 
 def _suppress_paddle_warnings():
@@ -66,11 +67,25 @@ def _get_values_model():
     return _values_model
 
 
+def _get_featured_model():
+    global _featured_model
+    if _featured_model is None:
+        _suppress_paddle_warnings()
+        from paddlex import create_model
+        _featured_model = create_model(
+            "PP-OCRv5_server_rec",
+            model_dir=str(_MODELS_DIR / "panel_featured"),
+        )
+        _logger.info("Loaded panel featured OCR model")
+    return _featured_model
+
+
 def preload_models():
     """Load OCR models eagerly. Call at startup to avoid delay on first match."""
     _suppress_paddle_warnings()
     _logger.info("Preloading OCR models...")
     _get_values_model()
+    _get_featured_model()
     _get_labels_model()
     _logger.info("OCR models ready")
 
@@ -270,7 +285,7 @@ def _ocr_featured_stat(panel: np.ndarray, box: tuple[int, int, int, int]) -> Her
     split_y = int(h * 0.6)
 
     val_region = _crop_to_text(featured[:split_y, :])
-    vr = list(_get_values_model().predict(val_region))
+    vr = list(_get_featured_model().predict(val_region))
     val = vr[0]["rec_text"].strip() if vr else ""
 
     lbl_region = featured[split_y:, :]

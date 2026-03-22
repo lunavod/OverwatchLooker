@@ -45,7 +45,7 @@ from overwatchlooker.overwolf import (
 if TYPE_CHECKING:
     from memoir_capture import CaptureEngine
     from overwatchlooker.overwolf import OverwolfEventQueue, OverwolfEvent, OverwolfReceiver
-    from overwatchlooker.tick import ChatSystem, OverwolfSystem, SubtitleSystem, TickLoop
+    from overwatchlooker.tick import ChatSystem, OverwolfSystem, SubtitleSystem, TeamSideSystem, TickLoop
     from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
@@ -101,6 +101,7 @@ class App:
         self._tick_loop: TickLoop | None = None
         self._subtitle_system: SubtitleSystem | None = None
         self._chat_system: ChatSystem | None = None
+        self._team_side_system: TeamSideSystem | None = None
         self._bus = event_bus
         self._overwolf = overwolf_receiver
         self._overwolf_queue: OverwolfEventQueue | None = None
@@ -249,6 +250,8 @@ class App:
         elif isinstance(event, GameModeUpdate):
             ms.mode = event.name
             ms.mode_code = event.code
+            if event.name in ("Escort", "Hybrid") and self._team_side_system:
+                self._team_side_system.enable()
             if ms.map_name.startswith("Unknown ("):
                 _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
                 if event.name in _REAL_MODES:
@@ -406,11 +409,13 @@ class App:
                 self._tick_loop._current_tick + int(fps * _POST_SUBMIT_COOLDOWN)
             )
 
-        # Reset subtitle/chat state
+        # Reset subtitle/chat/team-side state
         if self._detector is not None:
             self._detector.reset_match()
         if self._chat_system is not None:
             self._chat_system.reset_match()
+        if self._team_side_system is not None:
+            self._team_side_system.reset_match()
 
         # Reset match state for next match
         self._match_state = MatchState()
@@ -786,6 +791,11 @@ class App:
             _logger.info(f"Stored hero crop: {name}")
             self._ws_emit({"type": "hero_crop", "name": name})
 
+    def _on_team_side_detected(self, side: str) -> None:
+        """Callback when ATTACK/DEFEND label is detected from frame OCR."""
+        self._match_state.initial_team_side = side
+        self._ws_emit_match_state()
+
     def _on_hero_switch(self, player: str, hero: str, sim_time: float) -> None:
         """Callback when a hero switch is detected in subtitles."""
         ms = self._match_state
@@ -933,7 +943,8 @@ class App:
 
         from overwatchlooker.tick import (
             ChatSystem, MemoirFrameSource, MemoirInputSource,
-            OverwolfSystem, SubtitleSystem, TabCaptureSystem, TickLoop,
+            OverwolfSystem, SubtitleSystem, TabCaptureSystem, TeamSideSystem,
+            TickLoop,
         )
         from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
 
@@ -946,6 +957,10 @@ class App:
 
         tab_system = TabCaptureSystem(self, fps=fps)
         self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
+
+        team_side = TeamSideSystem(self, on_detected=self._on_team_side_detected)
+        self._tick_loop.register(team_side.on_tick, every_n_ticks=3)
+        self._team_side_system = team_side
 
         # Subtitle + chat OCR only when Overwolf is not connected
         if not self._overwolf_queue:
@@ -1024,7 +1039,8 @@ class App:
             # Replay mode: use ReplayFrameSource/ReplayInputSource directly
             from overwatchlooker.tick import (
                 ChatSystem, OverwolfSystem, ReplayFrameSource, ReplayInputSource,
-                ReplayOverwolfSource, SubtitleSystem, TabCaptureSystem, TickLoop,
+                ReplayOverwolfSource, SubtitleSystem, TabCaptureSystem,
+                TeamSideSystem, TickLoop,
             )
             from overwatchlooker.overwolf import OverwolfEventQueue, load_overwolf_events
             from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
@@ -1037,6 +1053,10 @@ class App:
 
             tab_system = TabCaptureSystem(self, fps=fps)
             self._tick_loop.register(tab_system.on_tick, every_n_ticks=1)
+
+            team_side = TeamSideSystem(self, on_detected=self._on_team_side_detected)
+            self._tick_loop.register(team_side.on_tick, every_n_ticks=3)
+            self._team_side_system = team_side
 
             # Replay Overwolf events if recording has them
             overwolf_events_path = self._replay_source.overwolf_events_path

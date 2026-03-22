@@ -143,6 +143,9 @@ class MatchState:
     rank_max: str = ""       # e.g. "Gold 1"
     is_wide_match: bool | None = None
 
+    # Team side (from Tesseract OCR of ATTACK/DEFEND label)
+    initial_team_side: str = ""  # "ATTACK" or "DEFEND"
+
     # Backfill detection
     is_backfill: bool = False
 
@@ -263,6 +266,7 @@ class MatchState:
             "rank_min": self.rank_min or None,
             "rank_max": self.rank_max or None,
             "is_wide_match": self.is_wide_match,
+            "initial_team_side": self.initial_team_side or None,
             "is_backfill": self.is_backfill,
             "hero_bans": self.hero_bans or None,
             "local_team": self._local_team,
@@ -352,8 +356,13 @@ def format_match_state(match: MatchState) -> str:
     # Result + duration
     result_str = match.result.value if match.result else "UNKNOWN"
     dur_str = _format_duration(match.duration)
-    backfill_str = " (BACKFILL)" if match.is_backfill else ""
-    lines.append(f"Result: {result_str} | Duration: {dur_str}{backfill_str}")
+    extras = []
+    if match.initial_team_side:
+        extras.append(match.initial_team_side)
+    if match.is_backfill:
+        extras.append("BACKFILL")
+    extra_str = f" ({', '.join(extras)})" if extras else ""
+    lines.append(f"Result: {result_str} | Duration: {dur_str}{extra_str}")
 
     # Rank
     if match.rank_min and match.rank_max:
@@ -572,6 +581,9 @@ def build_mcp_payload(match: MatchState) -> dict:
         "players": players,
         "is_backfill": match.is_backfill,
     }
+
+    if match.initial_team_side:
+        data["initial_team_side"] = match.initial_team_side
 
     # Rank
     if match.rank_min:

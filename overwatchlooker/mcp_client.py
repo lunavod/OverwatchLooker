@@ -54,6 +54,8 @@ async def _submit_match_async(
         args["is_wide_match"] = True
     if data.get("banned_heroes"):
         args["banned_heroes"] = data["banned_heroes"]
+    if data.get("initial_team_side"):
+        args["initial_team_side"] = data["initial_team_side"]
 
     if png_bytes:
         args["screenshot_uploads"] = [{

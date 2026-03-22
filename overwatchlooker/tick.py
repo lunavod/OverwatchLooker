@@ -426,6 +426,117 @@ class ChatSystem:
         self._last_count = 0
 
 
+class TeamSideSystem:
+    """Detects ATTACK/DEFEND label in the top-left of Escort/Hybrid modes.
+
+    Scans the top 20%, left 30% of each frame for pink (attack) or light blue
+    (defend) pixels. When >2% coverage is found, runs Tesseract OCR on the
+    binarized mask with a restricted character set and fuzzy-matches to
+    ATTACK or DEFEND.
+
+    Stops scanning once a match is found (one detection per match).
+    """
+
+    # Target colors (RGB) and tolerance
+    _ATTACK_RGB = np.array([199, 13, 78], dtype=float)
+    _DEFEND_RGB = np.array([137, 233, 253], dtype=float)
+    _TOLERANCE = 40.0
+    _MIN_COVERAGE = 0.02  # 2% of ROI pixels
+
+    def __init__(self, app, on_detected: Callable[[str], None] | None = None):
+        self._app = app
+        self._on_detected = on_detected
+        self._detected = False
+        self._enabled = False  # enabled once mode is Escort/Hybrid
+
+    def enable(self) -> None:
+        self._enabled = True
+
+    def reset_match(self) -> None:
+        self._detected = False
+        self._enabled = False
+
+    def on_tick(self, ctx: TickContext) -> None:
+        if self._detected or not self._enabled:
+            return
+
+        # Stop scanning once the local player's hero is known
+        if self._app is not None:
+            ms = self._app._match_state
+            local = ms.local_player
+            if local and local.current_hero:
+                _logger.debug("TeamSide: local hero resolved, stopping scan")
+                self._enabled = False
+                return
+
+        frame = ctx.frame_bgr
+        h, w = frame.shape[:2]
+        roi = frame[:int(h * 0.2), :int(w * 0.3)]
+        rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB).astype(float)
+
+        for target, label in [(self._ATTACK_RGB, "ATTACK"),
+                              (self._DEFEND_RGB, "DEFEND")]:
+            diff = np.sqrt(np.sum((rgb - target) ** 2, axis=2))
+            mask = (diff < self._TOLERANCE).astype(np.uint8) * 255
+            coverage = float(np.mean(mask > 0))
+            if coverage >= self._MIN_COVERAGE:
+                result = self._ocr_mask(mask, label)
+                if result:
+                    self._detected = True
+                    _logger.info(f"Team side detected: {result}")
+                    if self._on_detected:
+                        self._on_detected(result)
+                    return
+
+    def _ocr_mask(self, mask: np.ndarray, hint: str) -> str | None:
+        """OCR the binarized mask and fuzzy-match to ATTACK or DEFEND."""
+        import os
+        from pytesseract_api.api import get_image_data, get_tess_lib
+        from pytesseract_api.capi_types import TessPageSegMode
+        from overwatchlooker.heroes import edit_distance
+
+        tess_lib_path = r"C:\Program Files\Tesseract-OCR\libtesseract-5.dll"
+        tess_data = r"C:\Program Files\Tesseract-OCR\tessdata"
+        lib = get_tess_lib(tess_lib_path)
+        api = lib.TessBaseAPICreate()
+        lib.TessBaseAPIInit3(api, tess_data.encode(), b"eng")
+
+        try:
+            # Restrict to characters in ATTACK and DEFEND
+            lib.TessBaseAPISetVariable(api, b"tessedit_char_whitelist",
+                                       b"ATACKDEFNatckdefn")
+            lib.TessBaseAPISetPageSegMode(api, TessPageSegMode.PSM_SINGLE_LINE.value)
+
+            data = get_image_data(mask.copy())
+
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            old_stderr = os.dup(2)
+            os.dup2(devnull, 2)
+            try:
+                lib.TessBaseAPISetImage(api, *data)
+                res: bytes = lib.TessBaseAPIGetUTF8Text(api)
+                text = res.decode().strip().upper()
+            finally:
+                os.dup2(old_stderr, 2)
+                os.close(old_stderr)
+                os.close(devnull)
+        finally:
+            lib.TessBaseAPIEnd(api)
+            lib.TessBaseAPIDelete(api)
+
+        if not text:
+            return None
+
+        # Fuzzy match to ATTACK or DEFEND
+        d_attack = edit_distance(text, "ATTACK")
+        d_defend = edit_distance(text, "DEFEND")
+        best = min(d_attack, d_defend)
+        if best > 2:
+            _logger.debug(f"Team side OCR '{text}' too far from ATTACK/DEFEND")
+            return None
+        return "ATTACK" if d_attack <= d_defend else "DEFEND"
+
+
 # ---------------------------------------------------------------------------
 # Tick loop
 # ---------------------------------------------------------------------------

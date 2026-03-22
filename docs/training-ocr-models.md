@@ -7,9 +7,10 @@ Guide for training or retraining the hero panel OCR models from scratch on a fre
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
 - NVIDIA GPU with CUDA support (tested on RTX 4080)
 - PaddlePaddle GPU and PaddleOCR installed (`uv sync` handles this)
-- The fonts used by Overwatch 2's hero panel (not included in the repo — these are paid fonts, must be sourced by the user):
+- The fonts used by Overwatch 2's hero panel (not included in the repo — these are paid/free fonts, must be sourced by the user):
   - **Config Medium** (`Config-Medium.ttf`) — for stat labels. Available at [globalfonts.pro/font/config](https://globalfonts.pro/font/config).
   - **Futura No2 Demi Bold** (`Futura No2 Demi Bold.ttf` or similar) — for stat values. A community-sourced version is available at [Resike/Overwatch](https://github.com/Resike/Overwatch/tree/master/Fonts) (listed as `Futura No 2 D DemiBold.ttf`).
+  - **Big Noodle Titling Oblique** (`big_noodle_titling_oblique.ttf` or similar) — for featured stat values. Available at [Resike/Overwatch](https://github.com/Resike/Overwatch/tree/master/Fonts).
 
 ## Repository Structure
 
@@ -17,16 +18,19 @@ Guide for training or retraining the hero panel OCR models from scratch on a fre
 tools/
   generate_label_training.py    # Synthetic data generator for labels
   generate_value_training.py    # Synthetic data generator for values
-  preprocess_recaug.py          # Offline RecAug augmentation (optional)
+  generate_featured_training.py # Synthetic data generator for featured values
+  preprocess_recaug.py          # Offline RecAug augmentation
 training_data/
   PP-OCRv5_server_rec_pretrained.pdparams   # Base pretrained model (required)
   panel_labels/                 # Labels model training data + output
-  panel_values_v4/              # Values model training data + output
+  panel_values/                 # Values model training data + output
+  panel_featured/               # Featured model training data + output
+  panel_featured_finetune.yml   # Example training config (featured model)
 paddleocr_repo/                 # PaddleOCR clone (used for training scripts)
 overwatchlooker/models/         # Production inference models (git-tracked)
   panel_labels/                 # Exported labels model
   panel_values/                 # Exported values model
-  rank_assets/                  # Rank icon templates (not trained, just assets)
+  panel_featured/               # Exported featured values model
 ```
 
 ## Step 0: Setup Dependencies
@@ -72,6 +76,16 @@ uv run python tools/generate_value_training.py --font /path/to/Futura.ttf --coun
 Generates white-on-black number images using Futura font at varied sizes (32-60px, weighted toward 46px for 4K). Heavy oversampling of hard cases: zeros, standalone `1`, comma-separated numbers, timer patterns with colons.
 
 Output: same structure as labels, with dict containing `0-9 % , . :`.
+
+### Featured Model
+
+```bash
+uv run python tools/generate_featured_training.py --font /path/to/big_noodle_titling.ttf --count 5000 --output training_data/panel_featured
+```
+
+Generates white-on-black number images using Big Noodle Titling font at larger sizes (48-96px, weighted toward 80px for 4K). Heavy oversampling of timer patterns (MM:SS) since the featured stat frequently shows objective contest time.
+
+Output: same structure as values, with dict containing `0-9 % , . :`.
 
 ### Important: Keep It Simple
 
@@ -211,27 +225,43 @@ Eval:
     num_workers: 4
 ```
 
-Replace `<model>` with `panel_labels` or `panel_values` (or whatever directory name you used in Step 1).
+Replace `<model>` with your model directory name (e.g. `panel_featured`).
 
-### RecAug: Slow But Necessary
+**Key settings to adjust per model:**
 
-RecAug runs CPU-side augmentation (perspective warp, blur, noise, color inversion) during training. On Windows with `num_workers: 4` it roughly doubles training time. **Do not remove it** — our v1 labels model trained with RecAug achieves 100% on real data; v2 trained without it (but with pre-baked color variation) achieved 0%.
+| Setting | Labels | Values | Featured |
+|---------|--------|--------|----------|
+| `max_text_length` | 40 | 15 | 15 |
+| `use_space_char` | true | false | false |
+| `character_dict_path` | `panel_labels/dict.txt` | `panel_values/dict.txt` | `panel_featured/dict.txt` |
 
-If training is too slow, you can pre-apply RecAug offline:
+See `training_data/panel_featured_finetune.yml` for a complete working example.
+
+## Step 2b: Pre-apply RecAug
+
+RecAug (perspective warp, blur, noise, color inversion) is critical for generalization from synthetic to real data. Running it during training is very slow on Windows (CPU bottleneck doubles training time). Instead, pre-apply it offline:
 
 ```bash
 uv run python tools/preprocess_recaug.py \
-  --input training_data/panel_labels \
-  --output training_data/panel_labels_augmented \
+  --input training_data/panel_featured \
+  --output training_data/panel_featured_aug \
   --variants 1 --workers 4
 ```
 
-Then point the training config's `data_dir` at the augmented directory and remove `RecAug` from the transforms list. This decouples CPU augmentation from GPU training.
+This creates augmented copies of the training images. The val images are NOT augmented (we want to evaluate on clean data).
+
+**Important:** The training config must:
+- Point `Train.dataset.data_dir` and `Train.dataset.label_file_list` at the `_aug` directory
+- Point `Eval.dataset.data_dir` and `Eval.dataset.label_file_list` at the original (non-aug) directory
+- NOT include `RecAug` in the transforms list (it's already been applied)
+- Point `save_model_dir` and `save_res_path` at the original directory (output goes there)
+
+**Do not skip RecAug.** Our v1 labels model trained with RecAug achieves 100% on real data; v2 trained without it (but with 69K pre-baked color variations) achieved 0%.
 
 ## Step 3: Train
 
 ```bash
-uv run python -m paddleocr_repo.tools.train -c training_data/panel_values_v4_finetune.yml
+uv run python -m paddleocr_repo.tools.train -c training_data/panel_featured_finetune.yml
 ```
 
 ### What to Expect
@@ -266,44 +296,64 @@ After training, export the best checkpoint to an inference model:
 
 ```bash
 uv run python -m paddleocr_repo.tools.export_model \
-  -c training_data/panel_values_v4_finetune.yml \
-  -o "Global.pretrained_model=./training_data/panel_values_v4/output/best_accuracy" \
-     "Global.save_inference_dir=./training_data/panel_values_v4/inference/"
+  -c training_data/panel_featured_finetune.yml \
+  -o Global.checkpoints=./training_data/panel_featured/output/best_accuracy \
+     Global.save_inference_dir=./training_data/panel_featured/inference
 ```
 
 **Important**: Remove or clear the `checkpoints` field in the config before exporting, otherwise export will fail or load the wrong weights.
 
-The exported model has a `model_name` field in `inference.yml` that must match `PP-OCRv5_server_rec` for `paddlex.create_model` to load it:
+The exported model has a `model_name` field in `inference.yml` that must match `PP-OCRv5_server_rec` for `paddlex.create_model` to load it. Fix it:
 
 ```bash
-# Fix model name in exported config
-sed -i 's/panel_values_v4_rec/PP-OCRv5_server_rec/' training_data/panel_values_v4/inference/inference.yml
+sed -i 's/panel_featured_rec/PP-OCRv5_server_rec/' training_data/panel_featured/inference/inference.yml
 ```
+
+The sed pattern is always `s/<config_model_name>/PP-OCRv5_server_rec/` where `<config_model_name>` is the `model_name` from your training config's `Global` section.
 
 ## Step 5: Test on Real Screenshots
 
-Run the hero panel OCR script on test screenshots:
+Test the exported model directly:
+
+```python
+from paddlex import create_model
+import cv2
+
+model = create_model(model_name='PP-OCRv5_server_rec',
+                     model_dir='training_data/panel_featured/inference')
+img = cv2.imread('path/to/cropped_value.png')
+result = list(model.predict(img))
+print(result[0]["rec_text"], result[0]["rec_score"])
+```
+
+Or run the full hero panel pipeline:
 
 ```bash
 uv run python debug_panel_structure.py path/to/tab_screenshot.png
 ```
 
-Use any Overwatch 2 tab screen screenshot with a hero stats panel visible. Expected output: every label and value read correctly. If not, check:
+Expected output: every label and value read correctly. If not, check:
 
-1. **Values read as empty or garbled**: Are you cropping to text bounds before feeding to the model? Full 869px strips must be cropped to just the text region (see `crop_to_text` in the script).
-2. **Labels misread**: Check that the model was trained with RecAug enabled.
+1. **Values read as empty or garbled**: Are you cropping to text bounds before feeding to the model? Full 869px strips must be cropped to just the text region.
+2. **Labels misread**: Check that RecAug was applied (either during training or via preprocessing).
 3. **Commas read as periods**: Ensure `,` is in the character dictionary and training data has comma-number samples.
+4. **Featured value wrong**: Check the font — the game uses a different font for the featured stat than for regular values.
 
 ## Step 6: Deploy
 
 Copy the exported inference model to the production location:
 
 ```bash
-cp training_data/panel_values_v4/inference/* overwatchlooker/models/panel_values/
-cp training_data/panel_values_v4/dict.txt overwatchlooker/models/panel_values/
+cp training_data/panel_featured/inference/* overwatchlooker/models/panel_featured/
+cp training_data/panel_featured/dict.txt overwatchlooker/models/panel_featured/
 ```
 
 Commit via git (`.pdiparams` files are tracked via Git LFS).
+
+Then wire it into `hero_panel.py`:
+1. Add a lazy-loaded model function (`_get_featured_model()`) following the pattern of `_get_values_model()`
+2. Add it to `preload_models()`
+3. Use it in the appropriate OCR function
 
 ## Lessons Learned
 
@@ -312,9 +362,10 @@ These are hard-won findings from multiple training iterations. Read before chang
 ### What Works
 
 - **5K clean white-on-black samples** — sufficient for 100% real-world accuracy with restricted character sets
-- **RecAug during training** — provides spatial robustness (perspective, crop, distortion) that bridges the synthetic-to-real gap
+- **RecAug** — provides spatial robustness (perspective, crop, distortion) that bridges the synthetic-to-real gap. Pre-apply offline with `tools/preprocess_recaug.py` for faster training
 - **Restricted character sets** — A-Z+space for labels, 0-9+%+,+.+: for values. Eliminates O/0 and I/1 confusion entirely
-- **Separate models for labels and values** — different fonts (Config Medium vs Futura), different character sets, cleaner results
+- **Separate model per font** — the game uses different fonts for different text elements (Config Medium, Futura, Big Noodle Titling). Each model learns one font's shapes perfectly
+- **~35 minutes training on RTX 4080** — 5K samples, 100 epochs, 99.8%+ accuracy (~10 min to first good checkpoint)
 
 ### What Does NOT Work
 
@@ -325,7 +376,7 @@ These are hard-won findings from multiple training iterations. Read before chang
 
 ### Architecture Reference
 
-Both models use the same architecture (finetuned from PP-OCRv5 server rec):
+All models use the same architecture (finetuned from PP-OCRv5 server rec):
 
 ```
 Backbone: PPHGNetV2_B4 (text_rec mode)
@@ -337,3 +388,51 @@ Loss: MultiLoss (CTCLoss + NRTRLoss)
 PostProcess: CTCLabelDecode
 Input shape: [3, 48, 320]
 ```
+
+## Quick Reference: Adding a New Model
+
+Copy-paste checklist for adding a new OCR model for a different font. Replace `<name>` with your model name (e.g. `panel_featured`).
+
+```bash
+# 1. Create training data generator (copy and adapt an existing one)
+cp tools/generate_value_training.py tools/generate_<name>_training.py
+# Edit: change font sizes, value distribution, output prefix, default output dir
+
+# 2. Create training config (copy the featured model config as template)
+cp training_data/panel_featured_finetune.yml training_data/<name>_finetune.yml
+# Edit: replace panel_featured with <name>, adjust max_text_length/use_space_char
+
+# 3. Generate training data
+uv run python tools/generate_<name>_training.py --font /path/to/font.ttf
+
+# 4. Pre-apply RecAug
+uv run python tools/preprocess_recaug.py \
+  --input training_data/<name> \
+  --output training_data/<name>_aug \
+  --variants 1 --workers 4
+
+# 5. Train (~35 min on RTX 4080, first good checkpoint ~10 min)
+uv run python -m paddleocr_repo.tools.train -c training_data/<name>_finetune.yml
+
+# 6. Export
+uv run python -m paddleocr_repo.tools.export_model \
+  -c training_data/<name>_finetune.yml \
+  -o Global.checkpoints=./training_data/<name>/output/best_accuracy \
+     Global.save_inference_dir=./training_data/<name>/inference
+
+# 7. Fix model name in exported config
+sed -i 's/<name>_rec/PP-OCRv5_server_rec/' training_data/<name>/inference/inference.yml
+
+# 8. Deploy to production
+mkdir -p overwatchlooker/models/<name>
+cp training_data/<name>/inference/* overwatchlooker/models/<name>/
+cp training_data/<name>/dict.txt overwatchlooker/models/<name>/
+```
+
+Training config checklist:
+- `Train` data_dir + label_file_list → `<name>_aug/` (augmented)
+- `Eval` data_dir + label_file_list → `<name>/` (original, clean)
+- `save_model_dir` + `save_res_path` → `<name>/output/` (not aug)
+- `character_dict_path` → `<name>_aug/dict.txt` (copied by preprocess_recaug)
+- NO `RecAug` in transforms (already pre-applied)
+- `checkpoints` field must be empty/cleared before export

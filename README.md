@@ -191,6 +191,7 @@ overwatchlooker/
   models/                        # Finetuned PaddleOCR inference models (Git LFS)
     panel_labels/                # Stat label OCR (Config Medium, A-Z + space)
     panel_values/                # Stat value OCR (Futura, 0-9 + % + , + . + :)
+    panel_featured/              # Featured stat value OCR (Big Noodle Titling Oblique)
   assets/                        # Datamined game assets for template matching
     ranks/                       # Rank tier icons + division signs + wide match icon
     heroes/                      # Hero portrait thumbnails (50 heroes)

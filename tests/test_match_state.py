@@ -515,3 +515,20 @@ class TestBuildMcpPayload:
         ms.is_backfill = True
         output = format_match_state(ms)
         assert "(BACKFILL)" in output
+
+    def test_initial_team_side_in_payload(self):
+        ms = self._make_match()
+        ms.initial_team_side = "ATTACK"
+        payload = build_mcp_payload(ms)
+        assert payload["initial_team_side"] == "ATTACK"
+
+    def test_initial_team_side_omitted_when_empty(self):
+        ms = self._make_match()
+        payload = build_mcp_payload(ms)
+        assert "initial_team_side" not in payload
+
+    def test_format_contains_team_side(self):
+        ms = self._make_match()
+        ms.initial_team_side = "DEFEND"
+        output = format_match_state(ms)
+        assert "(DEFEND)" in output
