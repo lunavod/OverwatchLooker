@@ -56,6 +56,8 @@ async def _submit_match_async(
         args["banned_heroes"] = data["banned_heroes"]
     if data.get("initial_team_side"):
         args["initial_team_side"] = data["initial_team_side"]
+    if data.get("score_progression"):
+        args["score_progression"] = data["score_progression"]
 
     if png_bytes:
         args["screenshot_uploads"] = [{

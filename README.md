@@ -78,6 +78,7 @@ Result: VICTORY | Duration: 9:30
 Rank: Bronze 2 — Gold 1 (WIDE)
 Bans: Mercy, Symmetra, Vendetta, Zarya
 Rounds: 2 (4:12, 5:18)
+Score: 0:0 -> 1:0 -> 1:1 -> 2:1
 
 ── ALLY (Team 1) ──
   TANK  lunavod#21722        Reinhardt -> Ramattra (5:30)    10/9/1   8731 dmg  76 heal  17324 mit

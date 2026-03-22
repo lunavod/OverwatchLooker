@@ -29,7 +29,9 @@ from overwatchlooker.match_state import (
 )
 from overwatchlooker.notification import show_notification
 from overwatchlooker.overwolf import (
+    DeathEvent,
     GameModeUpdate,
+    GameType,
     GameTypeUpdate,
     MapUpdate,
     MatchEndEvent,
@@ -45,7 +47,7 @@ from overwatchlooker.overwolf import (
 if TYPE_CHECKING:
     from memoir_capture import CaptureEngine
     from overwatchlooker.overwolf import OverwolfEventQueue, OverwolfEvent, OverwolfReceiver
-    from overwatchlooker.tick import ChatSystem, OverwolfSystem, SubtitleSystem, TeamSideSystem, TickLoop
+    from overwatchlooker.tick import ChatSystem, ControlScoreSystem, OverwolfSystem, SubtitleSystem, TeamSideSystem, TickLoop
     from overwatchlooker.ws_server import EventBus
 
 _logger = logging.getLogger("overwatchlooker")
@@ -102,6 +104,7 @@ class App:
         self._subtitle_system: SubtitleSystem | None = None
         self._chat_system: ChatSystem | None = None
         self._team_side_system: TeamSideSystem | None = None
+        self._control_score_system: ControlScoreSystem | None = None
         self._bus = event_bus
         self._overwolf = overwolf_receiver
         self._overwolf_queue: OverwolfEventQueue | None = None
@@ -252,6 +255,9 @@ class App:
         elif isinstance(event, GameModeUpdate):
             ms.mode = event.name
             ms.mode_code = event.code
+            if (event.name == "Control" and self._control_score_system
+                    and ms.game_type != GameType.RANKED):
+                self._control_score_system.start()
             if ms.map_name.startswith("Unknown ("):
                 _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
                 if event.name in _REAL_MODES:
@@ -260,6 +266,11 @@ class App:
                                       f"Please report!")
         elif isinstance(event, GameTypeUpdate):
             ms.game_type = event.game_type
+            # Start control score if mode already known and not ranked
+            if (ms.mode == "Control" and self._control_score_system
+                    and event.game_type != GameType.RANKED
+                    and not self._control_score_system._active):
+                self._control_score_system.start()
         elif isinstance(event, QueueTypeUpdate):
             ms.queue_type = event.queue_type
         elif isinstance(event, PseudoMatchIdUpdate):
@@ -271,6 +282,10 @@ class App:
                 ms.rounds[-1].ended_at = event.timestamp
         elif isinstance(event, RosterUpdate):
             self._handle_roster_update(event)
+        elif isinstance(event, DeathEvent):
+            if self._control_score_system and self._tick_loop:
+                sim_time = self._tick_loop._current_tick / self._tick_loop.fps
+                self._control_score_system.record_death(sim_time)
 
         self._ws_emit_match_state()
 
@@ -398,6 +413,15 @@ class App:
         """Snapshot MatchState, analyze, print summary, reset for next match."""
         ms = self._match_state
 
+        # Finalize control score — if neither team reached 2, infer from result
+        if self._control_score_system and ms.control_score:
+            last = ms.control_score[-1]
+            if last[0] < 2 and last[1] < 2 and ms.result:
+                if ms.result == MatchResult.VICTORY:
+                    ms.control_score.append((2, last[1]))
+                elif ms.result == MatchResult.DEFEAT:
+                    ms.control_score.append((last[0], 2))
+
         _logger.info(f"Match end finalizing: hero_tabs={list(ms.hero_tabs.keys())}")
         ms.dump_to_log("MatchEnd")
         snapshot = ms.snapshot()
@@ -416,6 +440,8 @@ class App:
             self._chat_system.reset_match()
         if self._team_side_system is not None:
             self._team_side_system.reset_match()
+        if self._control_score_system is not None:
+            self._control_score_system.reset_match()
 
         # Reset match state for next match
         self._match_state = MatchState()
@@ -791,6 +817,11 @@ class App:
             _logger.info(f"Stored hero crop: {name}")
             self._ws_emit({"type": "hero_crop", "name": name})
 
+    def _on_control_score_change(self, transitions: list[tuple[int, int]]) -> None:
+        """Callback when control score changes."""
+        self._match_state.control_score = transitions
+        self._ws_emit_match_state()
+
     def _on_team_side_detected(self, side: str) -> None:
         """Callback when ATTACK/DEFEND label is detected from frame OCR."""
         self._match_state.initial_team_side = side
@@ -942,7 +973,7 @@ class App:
         self._engine.start()
 
         from overwatchlooker.tick import (
-            ChatSystem, MemoirFrameSource, MemoirInputSource,
+            ChatSystem, ControlScoreSystem, MemoirFrameSource, MemoirInputSource,
             OverwolfSystem, SubtitleSystem, TabCaptureSystem, TeamSideSystem,
             TickLoop,
         )
@@ -961,6 +992,10 @@ class App:
         team_side = TeamSideSystem(self, on_detected=self._on_team_side_detected)
         self._tick_loop.register(team_side.on_tick, every_n_ticks=3)
         self._team_side_system = team_side
+
+        control_score = ControlScoreSystem(on_score_change=self._on_control_score_change)
+        self._tick_loop.register(control_score.on_tick, every_n_ticks=int(fps * 2))
+        self._control_score_system = control_score
 
         # Subtitle + chat OCR only when Overwolf is not connected
         if not self._overwolf_queue:
@@ -1038,7 +1073,8 @@ class App:
         if self._replay_source:
             # Replay mode: use ReplayFrameSource/ReplayInputSource directly
             from overwatchlooker.tick import (
-                ChatSystem, OverwolfSystem, ReplayFrameSource, ReplayInputSource,
+                ChatSystem, ControlScoreSystem, OverwolfSystem,
+                ReplayFrameSource, ReplayInputSource,
                 ReplayOverwolfSource, SubtitleSystem, TabCaptureSystem,
                 TeamSideSystem, TickLoop,
             )
@@ -1057,6 +1093,10 @@ class App:
             team_side = TeamSideSystem(self, on_detected=self._on_team_side_detected)
             self._tick_loop.register(team_side.on_tick, every_n_ticks=3)
             self._team_side_system = team_side
+
+            control_score = ControlScoreSystem(on_score_change=self._on_control_score_change)
+            self._tick_loop.register(control_score.on_tick, every_n_ticks=int(fps * 2))
+            self._control_score_system = control_score
 
             # Replay Overwolf events if recording has them
             overwolf_events_path = self._replay_source.overwolf_events_path

@@ -149,6 +149,9 @@ class MatchState:
     # Backfill detection
     is_backfill: bool = False
 
+    # Control mode score transitions (from HUD detection)
+    control_score: list[tuple[int, int]] = field(default_factory=list)  # [(0,0), (1,0), ...]
+
     # Hero bans (from tab screenshot template matching)
     hero_bans: list[str] = field(default_factory=list)
 
@@ -268,6 +271,7 @@ class MatchState:
             "is_wide_match": self.is_wide_match,
             "initial_team_side": self.initial_team_side or None,
             "is_backfill": self.is_backfill,
+            "control_score": [list(s) for s in self.control_score] if self.control_score else None,
             "hero_bans": self.hero_bans or None,
             "local_team": self._local_team,
             "hero_tabs": {name: {"hero": c.hero_name, "tick": c.tick, "file": c.filename}
@@ -384,6 +388,11 @@ def format_match_state(match: MatchState) -> str:
             else:
                 round_durs.append("??:??")
         lines.append(f"Rounds: {len(match.rounds)} ({', '.join(round_durs)})")
+
+    # Control score
+    if match.control_score:
+        score_str = " -> ".join(f"{b}:{r}" for b, r in match.control_score)
+        lines.append(f"Score: {score_str}")
 
     # Group players by team side
     allies: list[PlayerState] = []
@@ -584,6 +593,10 @@ def build_mcp_payload(match: MatchState) -> dict:
 
     if match.initial_team_side:
         data["initial_team_side"] = match.initial_team_side
+
+    # Control score progression (skip the initial 0:0)
+    if match.control_score and len(match.control_score) > 1:
+        data["score_progression"] = [f"{b}:{r}" for b, r in match.control_score[1:]]
 
     # Rank
     if match.rank_min:

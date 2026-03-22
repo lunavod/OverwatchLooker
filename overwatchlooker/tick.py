@@ -426,6 +426,168 @@ class ChatSystem:
         self._last_count = 0
 
 
+class ControlScoreSystem:
+    """Detects Control mode round score from the top-center HUD.
+
+    Looks for filled blue/red score circles. Runs every 2 seconds.
+    Results within 5s before or 15s after a death event are invalidated
+    (kill cam shows misleading HUD).
+    """
+
+    # ROI at 1080p — includes higher position when score reaches 2
+    _ROI_Y = (25, 105)
+    _ROI_X = (0.38, 0.62)
+
+    # HSV thresholds for filled score circles
+    _BLUE_H = (85, 115)
+    _RED_H_LOW = 8
+    _RED_H_HIGH = 155
+    _SV_MIN = 150
+
+    _BLUE_X_FRAC = 0.22
+    _RED_X_FRAC = 0.78
+
+    # Contour filters (1080p baseline)
+    _MIN_AREA = 400
+    _MAX_AREA = 1200
+    _MIN_CIRCULARITY = 0.70
+    _ASPECT_RANGE = (0.7, 1.4)
+    _SIZE_RANGE = (20, 45)
+
+    # Death invalidation windows (seconds)
+    _DEATH_PRE = 5.0
+    _DEATH_POST = 15.0
+
+    def __init__(self, on_score_change: Callable[[list[tuple[int, int]]], None] | None = None):
+        self._on_score_change = on_score_change
+        self._active = False
+        self._history: list[tuple[float, int, int]] = []  # (sim_time, blue, red)
+        self._death_times: list[float] = []  # sim_times of death events
+        self._last_confirmed: tuple[int, int] = (0, 0)
+        self._transitions: list[tuple[int, int]] = [(0, 0)]
+
+    def start(self) -> None:
+        self._active = True
+
+    def stop(self) -> None:
+        self._active = False
+
+    def reset_match(self) -> None:
+        self._active = False
+        self._history.clear()
+        self._death_times.clear()
+        self._last_confirmed = (0, 0)
+        self._transitions = [(0, 0)]
+
+    def record_death(self, sim_time: float) -> None:
+        """Record a death event time for invalidation."""
+        self._death_times.append(sim_time)
+
+    def _is_valid_time(self, t: float) -> bool:
+        """Check if a sim_time is outside all death invalidation windows."""
+        for dt in self._death_times:
+            if dt - self._DEATH_PRE <= t <= dt + self._DEATH_POST:
+                return False
+        return True
+
+    _MIN_FILL_RATIO = 0.65  # reject rings (fill ~0.3) vs solid circles (~1.0)
+
+    def _count_circles(self, mask: np.ndarray, scale: float) -> int:
+        min_area = int(self._MIN_AREA * scale * scale)
+        max_area = int(self._MAX_AREA * scale * scale)
+        min_size = int(self._SIZE_RANGE[0] * scale)
+        max_size = int(self._SIZE_RANGE[1] * scale)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        n = 0
+        for c in contours:
+            area = cv2.contourArea(c)
+            perim = cv2.arcLength(c, True)
+            if perim == 0:
+                continue
+            circularity = 4 * np.pi * area / (perim * perim)
+            x, y, cw, ch = cv2.boundingRect(c)
+            if not (circularity > self._MIN_CIRCULARITY
+                    and min_area < area < max_area
+                    and self._ASPECT_RANGE[0] < cw / ch < self._ASPECT_RANGE[1]
+                    and min_size < cw < max_size):
+                continue
+            # Check interior fill to distinguish solid circles from rings
+            fill_mask = np.zeros(cleaned.shape, dtype=np.uint8)
+            cv2.drawContours(fill_mask, [c], -1, 255, -1)
+            filled_pixels = int(np.sum(fill_mask > 0))
+            actual_pixels = int(np.sum(cleaned[y:y + ch, x:x + cw] > 0))
+            if filled_pixels > 0 and actual_pixels / filled_pixels >= self._MIN_FILL_RATIO:
+                n += 1
+        return n
+
+    def on_tick(self, ctx: TickContext) -> None:
+        if not self._active:
+            return
+
+        frame = ctx.frame_bgr
+        h, w = frame.shape[:2]
+        scale = h / 1080.0
+
+        y1 = int(self._ROI_Y[0] * scale)
+        y2 = int(self._ROI_Y[1] * scale)
+        x1 = int(w * self._ROI_X[0])
+        x2 = int(w * self._ROI_X[1])
+
+        roi = frame[y1:y2, x1:x2]
+        rw = roi.shape[1]
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        blue_mask = ((hsv[:, :, 0] > self._BLUE_H[0]) &
+                     (hsv[:, :, 0] < self._BLUE_H[1]) &
+                     (hsv[:, :, 1] > self._SV_MIN) &
+                     (hsv[:, :, 2] > self._SV_MIN)).astype(np.uint8) * 255
+
+        red_mask = (((hsv[:, :, 0] > self._RED_H_HIGH) |
+                     (hsv[:, :, 0] < self._RED_H_LOW)) &
+                    (hsv[:, :, 1] > self._SV_MIN) &
+                    (hsv[:, :, 2] > self._SV_MIN)).astype(np.uint8) * 255
+
+        blue_region = blue_mask[:, :int(rw * self._BLUE_X_FRAC)]
+        red_region = red_mask[:, int(rw * self._RED_X_FRAC):]
+
+        blue_score = self._count_circles(blue_region, scale)
+        red_score = self._count_circles(red_region, scale)
+
+        # Clamp to valid range
+        blue_score = min(blue_score, 2)
+        red_score = min(red_score, 2)
+
+        self._history.append((ctx.sim_time, blue_score, red_score))
+
+        # Only accept if this reading is valid (not in death window)
+        if not self._is_valid_time(ctx.sim_time):
+            return
+
+        score = (blue_score, red_score)
+        if score != self._last_confirmed:
+            # Score can only go up, never down
+            if (score[0] >= self._last_confirmed[0]
+                    and score[1] >= self._last_confirmed[1]):
+                self._last_confirmed = score
+                self._transitions.append(score)
+                _logger.info(f"Control score: {score[0]}-{score[1]} "
+                             f"(tick={ctx.tick}, t={ctx.sim_time:.1f}s)")
+                if self._on_score_change:
+                    self._on_score_change(list(self._transitions))
+
+    @property
+    def transitions(self) -> list[tuple[int, int]]:
+        return list(self._transitions)
+
+    def format_transitions(self) -> str:
+        return " -> ".join(f"{b}:{r}" for b, r in self._transitions)
+
+
 class TeamSideSystem:
     """Detects ATTACK/DEFEND label in the top-left of Escort/Hybrid modes.
 

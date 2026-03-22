@@ -532,3 +532,20 @@ class TestBuildMcpPayload:
         ms.initial_team_side = "DEFEND"
         output = format_match_state(ms)
         assert "(DEFEND)" in output
+
+    def test_score_progression_in_payload(self):
+        ms = self._make_match()
+        ms.control_score = [(0, 0), (1, 0), (1, 1), (2, 1)]
+        payload = build_mcp_payload(ms)
+        assert payload["score_progression"] == ["1:0", "1:1", "2:1"]
+
+    def test_score_progression_omitted_when_empty(self):
+        ms = self._make_match()
+        payload = build_mcp_payload(ms)
+        assert "score_progression" not in payload
+
+    def test_format_contains_control_score(self):
+        ms = self._make_match()
+        ms.control_score = [(0, 0), (1, 0), (1, 1), (2, 1)]
+        output = format_match_state(ms)
+        assert "Score: 0:0 -> 1:0 -> 1:1 -> 2:1" in output
