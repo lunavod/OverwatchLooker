@@ -210,6 +210,8 @@ class App:
                 new._local_team = ms._local_team
             ms = new
             new.dump_to_log("MatchStart")
+            if self._team_side_system is not None:
+                self._team_side_system.start()
             self._auto_recording_start()
             self._ws_emit_match_state()
             return
@@ -250,8 +252,6 @@ class App:
         elif isinstance(event, GameModeUpdate):
             ms.mode = event.name
             ms.mode_code = event.code
-            if event.name in ("Escort", "Hybrid") and self._team_side_system:
-                self._team_side_system.enable()
             if ms.map_name.startswith("Unknown ("):
                 _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
                 if event.name in _REAL_MODES:

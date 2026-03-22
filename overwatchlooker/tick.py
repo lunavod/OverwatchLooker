@@ -443,30 +443,42 @@ class TeamSideSystem:
     _TOLERANCE = 40.0
     _MIN_COVERAGE = 0.02  # 2% of ROI pixels
 
+    _SIDE_MODES = {"Escort", "Hybrid"}
+
     def __init__(self, app, on_detected: Callable[[str], None] | None = None):
         self._app = app
         self._on_detected = on_detected
         self._detected = False
-        self._enabled = False  # enabled once mode is Escort/Hybrid
+        self._active = False  # scanning in progress
 
-    def enable(self) -> None:
-        self._enabled = True
+    def start(self) -> None:
+        """Start scanning. Called on MatchStart."""
+        self._active = True
+        self._detected = False
+
+    def stop(self) -> None:
+        """Stop scanning."""
+        self._active = False
 
     def reset_match(self) -> None:
         self._detected = False
-        self._enabled = False
+        self._active = False
 
     def on_tick(self, ctx: TickContext) -> None:
-        if self._detected or not self._enabled:
+        if self._detected or not self._active:
             return
 
-        # Stop scanning once the local player's hero is known
+        # Stop if local hero is already resolved (label is gone)
         if self._app is not None:
             ms = self._app._match_state
             local = ms.local_player
             if local and local.current_hero:
-                _logger.debug("TeamSide: local hero resolved, stopping scan")
-                self._enabled = False
+                _logger.info("TeamSide: local hero resolved, stopping scan")
+                self._active = False
+                return
+            # Stop if mode resolved to something without sides
+            if ms.mode and ms.mode not in self._SIDE_MODES:
+                self._active = False
                 return
 
         frame = ctx.frame_bgr
