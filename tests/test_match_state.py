@@ -498,3 +498,20 @@ class TestBuildMcpPayload:
         ms.players["LUNAVOD"].in_party = True
         output = format_match_state(ms)
         assert "[P]" in output
+
+    def test_backfill_in_payload(self):
+        ms = self._make_match()
+        ms.is_backfill = True
+        payload = build_mcp_payload(ms)
+        assert payload["is_backfill"] is True
+
+    def test_backfill_default_false(self):
+        ms = self._make_match()
+        payload = build_mcp_payload(ms)
+        assert payload["is_backfill"] is False
+
+    def test_format_contains_backfill(self):
+        ms = self._make_match()
+        ms.is_backfill = True
+        output = format_match_state(ms)
+        assert "(BACKFILL)" in output

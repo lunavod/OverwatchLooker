@@ -507,8 +507,18 @@ def _load_hero_templates() -> dict[str, np.ndarray]:
     return _hero_templates
 
 
+# Known optimal scales: 0.34 for 4K (3840x2160), 0.17 for 1080p (1920x1080).
+# Try these first for speed, then fall back to a broader scan.
+_BAN_PREFERRED_SCALES = [0.34, 0.17]
+_BAN_FALLBACK_SCALES = [float(s) for s in np.arange(0.2, 0.6, 0.05)
+                        if abs(s - 0.34) > 0.02 and abs(s - 0.17) > 0.02]
+
+
 def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
     """Detect banned heroes from the top bar of a tab screenshot.
+
+    Uses a two-pass approach: first tries known scales for 4K/1080p,
+    then falls back to a broader scan if fewer than 4 bans are found.
 
     Returns a list of hero names (Title Case, matching heroes.txt).
     """
@@ -519,26 +529,39 @@ def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
     roi = img[:int(h * 0.06), int(w * 0.15):int(w * 0.55)]
     rh, rw = roi.shape[:2]
 
-    bans: list[tuple[str, float, int]] = []  # hero, score, x
-
-    for hero, tmpl in templates.items():
-        th, tw = tmpl.shape[:2]
-        best_val = -1.0
-        best_x = 0
-
-        for scale in np.arange(0.2, 0.6, 0.02):
-            sw, sh = int(tw * scale), int(th * scale)
-            if sw > rw or sh > rh or sw < 10 or sh < 10:
+    def _scan(scales: list[float],
+              skip: set[str] | None = None) -> list[tuple[str, float, int]]:
+        found: list[tuple[str, float, int]] = []
+        for hero, tmpl in templates.items():
+            if skip and hero in skip:
                 continue
-            resized = cv2.resize(tmpl, (sw, sh))
-            result = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
-            _, mv, _, ml = cv2.minMaxLoc(result)
-            if mv > best_val:
-                best_val = mv
-                best_x = ml[0]
+            th, tw = tmpl.shape[:2]
+            best_val = -1.0
+            best_x = 0
+            for scale in scales:
+                sw, sh = int(tw * scale), int(th * scale)
+                if sw > rw or sh > rh or sw < 10 or sh < 10:
+                    continue
+                resized = cv2.resize(tmpl, (sw, sh))
+                result = cv2.matchTemplate(roi, resized, cv2.TM_CCOEFF_NORMED)
+                _, mv, _, ml = cv2.minMaxLoc(result)
+                if mv > best_val:
+                    best_val = mv
+                    best_x = ml[0]
+            if best_val >= threshold:
+                found.append((hero, best_val, best_x))
+                if len(found) + (len(skip) if skip else 0) >= 4:
+                    break
+        return found
 
-        if best_val >= threshold:
-            bans.append((hero, best_val, best_x))
+    # Pass 1: preferred scales (fast — 2 scales × 50 heroes)
+    bans = _scan(_BAN_PREFERRED_SCALES)
+
+    # Pass 2: if we didn't find 4, try remaining scales on unmatched heroes
+    if len(bans) < 4:
+        already = {hero for hero, _, _ in bans}
+        extra = _scan(_BAN_FALLBACK_SCALES, skip=already)
+        bans.extend(extra)
 
     # Sort by x position (left to right)
     bans.sort(key=lambda b: b[2])

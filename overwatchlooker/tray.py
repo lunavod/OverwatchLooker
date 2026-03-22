@@ -295,6 +295,21 @@ class App:
             ms._local_team = entry.team
             ms.resolve_team_sides()
             _logger.info(f"Local team resolved: team={entry.team}")
+            # Backfill detection: local player has zero stats but others don't
+            if (not ms.is_backfill
+                    and entry.kills == 0 and entry.deaths == 0
+                    and entry.assists == 0 and entry.damage == 0
+                    and entry.healed == 0 and entry.mitigated == 0):
+                for other in ms.players.values():
+                    if other.is_local or other.stats is None:
+                        continue
+                    s = other.stats
+                    if (s.kills or s.deaths or s.assists
+                            or s.damage or s.healing or s.mitigation):
+                        ms.is_backfill = True
+                        _logger.info("Backfill detected: other players have "
+                                     "non-zero stats at match start")
+                        break
         elif player.team is not None and ms._local_team is not None:
             from overwatchlooker.match_state import TeamSide
             player.team_side = (
@@ -479,10 +494,12 @@ class App:
                         _logger.info(f"Rank: {rank.min_rank} - {rank.max_rank} "
                                      f"(wide={rank.is_wide})")
 
-                # Hero bans
-                bans = detect_hero_bans(img)
-                if bans:
-                    snapshot.hero_bans = bans
+                # Hero bans (competitive only)
+                from overwatchlooker.overwolf import GameType
+                if snapshot.game_type == GameType.RANKED:
+                    bans = detect_hero_bans(img)
+                    if bans:
+                        snapshot.hero_bans = bans
 
                 # Party detection — map green indicators to ally players by role order
                 assert img is not None
@@ -695,6 +712,52 @@ class App:
         print_status(f"Tab screenshot saved: {filename}")
         self._ws_emit({"type": "tab_capture", "filename": filename,
                        "timestamp": timestamp})
+
+        # Run rank + ban detection early if not yet populated (competitive only)
+        self._try_early_detection(png_bytes)
+
+    def _try_early_detection(self, png_bytes: bytes) -> None:
+        """Run rank + ban detection on a tab screenshot if not yet populated."""
+        ms = self._match_state
+        from overwatchlooker.overwolf import GameType
+        is_ranked = ms.game_type == GameType.RANKED
+        needs_rank = not ms.rank_min
+        needs_bans = is_ranked and not ms.hero_bans
+
+        if not needs_rank and not needs_bans:
+            return
+
+        def _detect():
+            try:
+                import cv2
+                import numpy as np
+                from overwatchlooker.hero_panel import detect_rank_range, detect_hero_bans
+
+                img = cv2.imdecode(
+                    np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if img is None:
+                    return
+
+                if needs_rank:
+                    rank = detect_rank_range(img)
+                    if rank:
+                        ms.rank_min = rank.min_rank
+                        ms.rank_max = rank.max_rank
+                        ms.is_wide_match = rank.is_wide
+                        _logger.info(f"Early rank: {rank.min_rank} - {rank.max_rank} "
+                                     f"(wide={rank.is_wide})")
+                        self._ws_emit_match_state()
+
+                if needs_bans:
+                    bans = detect_hero_bans(img)
+                    if bans:
+                        ms.hero_bans = bans
+                        _logger.info(f"Early bans: {bans}")
+                        self._ws_emit_match_state()
+            except Exception as e:
+                _logger.debug(f"Early detection failed: {e}")
+
+        threading.Thread(target=_detect, daemon=True).start()
 
     def store_hero_crop(self, name: str, crop: bytes) -> None:
         """Store a hero panel crop into local player's hero_panels."""

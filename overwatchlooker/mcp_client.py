@@ -42,7 +42,7 @@ async def _submit_match_async(
         "players": data["players"],
         "source": MCP_SOURCE,
         "played_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "is_backfill": is_backfill,
+        "is_backfill": data.get("is_backfill", is_backfill),
     }
 
     # Pass through optional rank fields

@@ -143,6 +143,9 @@ class MatchState:
     rank_max: str = ""       # e.g. "Gold 1"
     is_wide_match: bool | None = None
 
+    # Backfill detection
+    is_backfill: bool = False
+
     # Hero bans (from tab screenshot template matching)
     hero_bans: list[str] = field(default_factory=list)
 
@@ -260,6 +263,7 @@ class MatchState:
             "rank_min": self.rank_min or None,
             "rank_max": self.rank_max or None,
             "is_wide_match": self.is_wide_match,
+            "is_backfill": self.is_backfill,
             "hero_bans": self.hero_bans or None,
             "local_team": self._local_team,
             "hero_tabs": {name: {"hero": c.hero_name, "tick": c.tick, "file": c.filename}
@@ -348,7 +352,8 @@ def format_match_state(match: MatchState) -> str:
     # Result + duration
     result_str = match.result.value if match.result else "UNKNOWN"
     dur_str = _format_duration(match.duration)
-    lines.append(f"Result: {result_str} | Duration: {dur_str}")
+    backfill_str = " (BACKFILL)" if match.is_backfill else ""
+    lines.append(f"Result: {result_str} | Duration: {dur_str}{backfill_str}")
 
     # Rank
     if match.rank_min and match.rank_max:
@@ -565,6 +570,7 @@ def build_mcp_payload(match: MatchState) -> dict:
         "queue_type": queue_type,
         "result": result,
         "players": players,
+        "is_backfill": match.is_backfill,
     }
 
     # Rank
