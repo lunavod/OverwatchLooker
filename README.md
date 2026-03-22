@@ -66,6 +66,7 @@ Replays a previously recorded session at max speed, running the full detection p
 | `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
 | `--transcript` | Log subtitle OCR results to `transcripts/` folder |
 | `--replay` | Replay a recording directory or `.mp4` file |
+| `--replay-duration N` | Only replay the first N seconds of the recording |
 | `--auto-recording` | Automatically record matches (starts on match start, stops after match end) |
 | `--auto-recording-tail N` | Seconds to keep recording after match ends (default: 60) |
 
@@ -193,6 +194,7 @@ overwatchlooker/
     panel_labels/                # Stat label OCR (Config Medium, A-Z + space)
     panel_values/                # Stat value OCR (Futura, 0-9 + % + , + . + :)
     panel_featured/              # Featured stat value OCR (Big Noodle Titling Oblique)
+    team_side/                   # ATTACK/DEFEND detection OCR (Big Noodle Titling Oblique)
   assets/                        # Datamined game assets for template matching
     ranks/                       # Rank tier icons + division signs + wide match icon
     heroes/                      # Hero portrait thumbnails (50 heroes)

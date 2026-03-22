@@ -102,6 +102,7 @@ MAP_CODES: dict[str, str] = {
     "3411": "Esperança",
     "3603": "New Junk City",
     "3762": "Runasapi",
+    "3893": "Aatlis",
 }
 
 MODE_CODES: dict[str, str] = {

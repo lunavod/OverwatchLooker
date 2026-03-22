@@ -594,29 +594,30 @@ class TeamSideSystem:
     Scans the top 20%, left 30% of each frame for pink (attack) or light blue
     (defend) pixels. When >2% coverage is found, runs Tesseract OCR on the
     binarized mask with a restricted character set and fuzzy-matches to
-    ATTACK or DEFEND.
+    ATTACK or DEFEND using a finetuned PaddleOCR model.
 
-    Stops scanning once a match is found (one detection per match).
+    Requires 3 consecutive agreeing reads to confirm (filters hallucinations
+    on blank/sky frames).
+
+    Stops scanning once confirmed or when a round starts.
     """
 
-    # Target colors (RGB) and tolerance
-    _ATTACK_RGB = np.array([199, 13, 78], dtype=float)
-    _DEFEND_RGB = np.array([137, 233, 253], dtype=float)
-    _TOLERANCE = 40.0
-    _MIN_COVERAGE = 0.02  # 2% of ROI pixels
-
     _SIDE_MODES = {"Escort", "Hybrid"}
+    _REQUIRED_AGREES = 3  # consecutive matching reads to confirm
+    _MIN_CONFIDENCE = 0.97  # reject low-confidence hallucinations
 
     def __init__(self, app, on_detected: Callable[[str], None] | None = None):
         self._app = app
         self._on_detected = on_detected
         self._detected = False
-        self._active = False  # scanning in progress
+        self._active = False
+        self._consecutive: list[str] = []  # recent consecutive results
 
     def start(self) -> None:
         """Start scanning. Called on MatchStart."""
         self._active = True
         self._detected = False
+        self._consecutive.clear()
 
     def stop(self) -> None:
         """Stop scanning."""
@@ -625,90 +626,49 @@ class TeamSideSystem:
     def reset_match(self) -> None:
         self._detected = False
         self._active = False
+        self._consecutive.clear()
 
     def on_tick(self, ctx: TickContext) -> None:
         if self._detected or not self._active:
             return
 
-        # Stop if local hero is already resolved (label is gone)
+        # Stop conditions
         if self._app is not None:
             ms = self._app._match_state
-            local = ms.local_player
-            if local and local.current_hero:
-                _logger.info("TeamSide: local hero resolved, stopping scan")
+            if ms.rounds:
+                _logger.info("TeamSide: round started, stopping scan")
                 self._active = False
                 return
-            # Stop if mode resolved to something without sides
             if ms.mode and ms.mode not in self._SIDE_MODES:
                 self._active = False
                 return
 
-        frame = ctx.frame_bgr
-        h, w = frame.shape[:2]
-        roi = frame[:int(h * 0.2), :int(w * 0.3)]
-        rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB).astype(float)
+        from overwatchlooker.hero_panel import detect_team_side
 
-        for target, label in [(self._ATTACK_RGB, "ATTACK"),
-                              (self._DEFEND_RGB, "DEFEND")]:
-            diff = np.sqrt(np.sum((rgb - target) ** 2, axis=2))
-            mask = (diff < self._TOLERANCE).astype(np.uint8) * 255
-            coverage = float(np.mean(mask > 0))
-            if coverage >= self._MIN_COVERAGE:
-                result = self._ocr_mask(mask, label)
-                if result:
-                    self._detected = True
-                    _logger.info(f"Team side detected: {result}")
-                    if self._on_detected:
-                        self._on_detected(result)
-                    return
+        result = detect_team_side(ctx.frame_bgr)
+        if result is None:
+            self._consecutive.clear()
+            return
 
-    def _ocr_mask(self, mask: np.ndarray, hint: str) -> str | None:
-        """OCR the binarized mask and fuzzy-match to ATTACK or DEFEND."""
-        import os
-        from pytesseract_api.api import get_image_data, get_tess_lib
-        from pytesseract_api.capi_types import TessPageSegMode
-        from overwatchlooker.heroes import edit_distance
+        side, conf = result
+        _logger.debug(f"TeamSide read: {side} ({conf:.3f}) "
+                      f"streak={len(self._consecutive)} tick={ctx.tick}")
 
-        tess_lib_path = r"C:\Program Files\Tesseract-OCR\libtesseract-5.dll"
-        tess_data = r"C:\Program Files\Tesseract-OCR\tessdata"
-        lib = get_tess_lib(tess_lib_path)
-        api = lib.TessBaseAPICreate()
-        lib.TessBaseAPIInit3(api, tess_data.encode(), b"eng")
+        if conf < self._MIN_CONFIDENCE:
+            self._consecutive.clear()
+            return
 
-        try:
-            # Restrict to characters in ATTACK and DEFEND
-            lib.TessBaseAPISetVariable(api, b"tessedit_char_whitelist",
-                                       b"ATACKDEFNatckdefn")
-            lib.TessBaseAPISetPageSegMode(api, TessPageSegMode.PSM_SINGLE_LINE.value)
+        # Track consecutive agreement
+        if self._consecutive and self._consecutive[-1] != side:
+            self._consecutive.clear()
+        self._consecutive.append(side)
 
-            data = get_image_data(mask.copy())
-
-            devnull = os.open(os.devnull, os.O_WRONLY)
-            old_stderr = os.dup(2)
-            os.dup2(devnull, 2)
-            try:
-                lib.TessBaseAPISetImage(api, *data)
-                res: bytes = lib.TessBaseAPIGetUTF8Text(api)
-                text = res.decode().strip().upper()
-            finally:
-                os.dup2(old_stderr, 2)
-                os.close(old_stderr)
-                os.close(devnull)
-        finally:
-            lib.TessBaseAPIEnd(api)
-            lib.TessBaseAPIDelete(api)
-
-        if not text:
-            return None
-
-        # Fuzzy match to ATTACK or DEFEND
-        d_attack = edit_distance(text, "ATTACK")
-        d_defend = edit_distance(text, "DEFEND")
-        best = min(d_attack, d_defend)
-        if best > 2:
-            _logger.debug(f"Team side OCR '{text}' too far from ATTACK/DEFEND")
-            return None
-        return "ATTACK" if d_attack <= d_defend else "DEFEND"
+        if len(self._consecutive) >= self._REQUIRED_AGREES:
+            self._detected = True
+            _logger.info(f"Team side detected: {side} "
+                         f"({self._REQUIRED_AGREES} consecutive reads)")
+            if self._on_detected:
+                self._on_detected(side)
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +687,7 @@ class TickLoop:
         self._threads: list[threading.Thread] = []
         self.running = True
         self._current_tick = 0
+        self.max_ticks: int | None = None  # stop after this many ticks
 
     def register(self, on_tick, every_n_ticks: int = 1) -> None:
         self._systems.append((every_n_ticks, on_tick))
@@ -761,6 +722,9 @@ class TickLoop:
                     if isinstance(self.frame_source, ReplayFrameSource):
                         break  # replay exhausted
                     continue  # Live: no frame, don't advance tick
+
+                if self.max_ticks is not None and tick >= self.max_ticks:
+                    break
 
                 sim_time = tick / self.fps
                 self.input_source.advance_to(tick)

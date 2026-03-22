@@ -513,6 +513,10 @@ class TestMapCodes:
         from overwatchlooker.overwolf import MAP_CODES
         assert MAP_CODES["3762"] == "Runasapi"
 
+    def test_aatlis(self):
+        from overwatchlooker.overwolf import MAP_CODES
+        assert MAP_CODES["3893"] == "Aatlis"
+
     def test_push_mode(self):
         from overwatchlooker.overwolf import MODE_CODES
         assert MODE_CODES["0064"] == "Push"

@@ -24,6 +24,7 @@ _HERO_ASSETS_DIR = _ASSETS_DIR / "heroes"
 _labels_model = None
 _values_model = None
 _featured_model = None
+_side_model = None
 
 
 def _suppress_paddle_warnings():
@@ -80,6 +81,19 @@ def _get_featured_model():
     return _featured_model
 
 
+def _get_side_model():
+    global _side_model
+    if _side_model is None:
+        _suppress_paddle_warnings()
+        from paddlex import create_model
+        _side_model = create_model(
+            "PP-OCRv5_server_rec",
+            model_dir=str(_MODELS_DIR / "team_side"),
+        )
+        _logger.info("Loaded team side OCR model")
+    return _side_model
+
+
 def preload_models():
     """Load OCR models eagerly. Call at startup to avoid delay on first match."""
     _suppress_paddle_warnings()
@@ -87,6 +101,7 @@ def preload_models():
     _get_values_model()
     _get_featured_model()
     _get_labels_model()
+    _get_side_model()
     _logger.info("OCR models ready")
 
 
@@ -585,6 +600,41 @@ def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
     if banned_heroes:
         _logger.info(f"Hero bans detected: {banned_heroes}")
     return banned_heroes
+
+
+# ---------------------------------------------------------------------------
+# Team side detection (ATTACK/DEFEND)
+# ---------------------------------------------------------------------------
+
+def detect_team_side(img_bgr: np.ndarray) -> tuple[str, float] | None:
+    """Detect ATTACK or DEFEND from the hero select screen.
+
+    Crops the text region and runs the team_side OCR model.
+    Returns (side, confidence) or None if no valid match.
+    """
+    from overwatchlooker.heroes import edit_distance
+
+    h, w = img_bgr.shape[:2]
+    crop = img_bgr[int(h * 0.11):int(h * 0.18), int(w * 0.08):int(w * 0.22)]
+
+    model = _get_side_model()
+    result = list(model.predict(crop))
+    if not result:
+        return None
+
+    text = result[0]["rec_text"].strip().upper()
+    conf = float(result[0]["rec_score"])
+    if not text:
+        return None
+
+    d_attack = edit_distance(text, "ATTACK")
+    d_defend = edit_distance(text, "DEFEND")
+    best = min(d_attack, d_defend)
+    if best > 3:
+        return None
+
+    side = "ATTACK" if d_attack <= d_defend else "DEFEND"
+    return (side, conf)
 
 
 # ---------------------------------------------------------------------------

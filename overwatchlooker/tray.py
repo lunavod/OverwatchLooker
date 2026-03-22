@@ -552,9 +552,15 @@ class App:
         except Exception as e:
             _logger.warning(f"Snapshot analysis failed: {e}")
 
+    _SKIP_GAME_TYPES = {GameType.PRACTICE, GameType.TUTORIAL, GameType.SKIRMISH,
+                         GameType.HERO_MASTERY}
+
     def _submit_to_mcp(self, snapshot: MatchState) -> None:
         """Submit match to MCP server if enabled via --mcp flag."""
         if not self._use_mcp:
+            return
+        if snapshot.game_type in self._SKIP_GAME_TYPES:
+            _logger.info(f"MCP: skipping {snapshot.game_type.value} match")
             return
         from overwatchlooker.config import MCP_URL
         if not MCP_URL:
