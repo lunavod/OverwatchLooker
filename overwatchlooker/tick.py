@@ -611,7 +611,7 @@ class TeamSideSystem:
 
     _SIDE_MODES = {"Escort", "Hybrid"}
     _REQUIRED_AGREES = 3  # consecutive matching reads to confirm
-    _MIN_CONFIDENCE = 0.97  # reject low-confidence hallucinations
+    _MIN_CONFIDENCE = 0.995  # reject hallucinations (real text ~1.0, blank frames ~0.98)
 
     def __init__(self, app, on_detected: Callable[[str], None] | None = None):
         self._app = app
