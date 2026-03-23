@@ -611,19 +611,22 @@ class TeamSideSystem:
 
     _SIDE_MODES = {"Escort", "Hybrid"}
     _REQUIRED_AGREES = 3  # consecutive matching reads to confirm
-    _MIN_CONFIDENCE = 0.995  # reject hallucinations (real text ~1.0, blank frames ~0.98)
+    _MIN_CONFIDENCE = 0.90  # baseline confidence filter
+    _START_DELAY = 3.0  # skip first N seconds (loading transition hallucinations)
 
     def __init__(self, app, on_detected: Callable[[str], None] | None = None):
         self._app = app
         self._on_detected = on_detected
         self._detected = False
         self._active = False
-        self._consecutive: list[str] = []  # recent consecutive results
+        self._started_at: float = 0.0
+        self._consecutive: list[str] = []
 
     def start(self) -> None:
         """Start scanning. Called on MatchStart."""
         self._active = True
         self._detected = False
+        self._started_at = 0.0  # set on first tick
         self._consecutive.clear()
 
     def stop(self) -> None:
@@ -633,10 +636,17 @@ class TeamSideSystem:
     def reset_match(self) -> None:
         self._detected = False
         self._active = False
+        self._started_at = 0.0
         self._consecutive.clear()
 
     def on_tick(self, ctx: TickContext) -> None:
         if self._detected or not self._active:
+            return
+
+        # Record start time and skip first few seconds
+        if self._started_at == 0.0:
+            self._started_at = ctx.sim_time
+        if ctx.sim_time - self._started_at < self._START_DELAY:
             return
 
         # Stop conditions
