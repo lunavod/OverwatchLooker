@@ -262,6 +262,10 @@ def _ocr_value(panel: np.ndarray, ys: int, ye: int) -> str:
 
 def _ocr_label(panel: np.ndarray, ys: int, ye: int) -> str:
     region = panel[ys:ye, :]
+    # Crop to left 65% — in-game tip overlays bleed through the
+    # semi-transparent panel on the right side and corrupt OCR.
+    pw = region.shape[1]
+    region = region[:, :int(pw * 0.65)]
     results = list(_get_labels_model().predict(region))
     if results:
         return results[0]["rec_text"].strip()
