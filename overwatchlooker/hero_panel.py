@@ -236,16 +236,26 @@ def _classify_rows(gray: np.ndarray, rows: list[tuple[int, int]]) -> list[tuple[
 # Crop + OCR helpers
 # ---------------------------------------------------------------------------
 
-def _crop_to_text(img_bgr: np.ndarray, threshold: int = 120, pad: int = 10) -> np.ndarray:
+def _binarize_crop(img_bgr: np.ndarray, threshold: int = 120,
+                    pad: int = 10, border: int = 5) -> np.ndarray:
+    """Binarize, crop to text bounding box, and pad with black.
+
+    Produces clean white-on-black input matching the OCR models' training
+    data, and removes any faint background bleed (e.g. in-game tip overlays).
+    """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    cols = np.where(gray.max(axis=0) > threshold)[0]
-    rows = np.where(gray.max(axis=1) > threshold)[0]
-    if len(cols) == 0 or len(rows) == 0:
+    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+    text_ys, text_xs = np.where(binary > 0)
+    if len(text_ys) == 0:
         return img_bgr
-    return img_bgr[
-        max(0, rows[0] - pad):rows[-1] + pad,
-        max(0, cols[0] - pad):cols[-1] + pad,
-    ]
+    y1 = max(0, int(np.min(text_ys)) - pad)
+    y2 = min(binary.shape[0], int(np.max(text_ys)) + pad)
+    x1 = max(0, int(np.min(text_xs)) - pad)
+    x2 = min(binary.shape[1], int(np.max(text_xs)) + pad)
+    cropped = binary[y1:y2, x1:x2]
+    padded = cv2.copyMakeBorder(cropped, border, border, border, border,
+                                cv2.BORDER_CONSTANT, value=0)
+    return cv2.cvtColor(padded, cv2.COLOR_GRAY2BGR)
 
 
 def _ocr_value(panel: np.ndarray, ys: int, ye: int) -> str:
@@ -253,7 +263,7 @@ def _ocr_value(panel: np.ndarray, ys: int, ye: int) -> str:
     ys_pad = max(0, ys - 20)
     ye_pad = min(h, ye + 20)
     region = panel[ys_pad:ye_pad, :]
-    cropped = _crop_to_text(region)
+    cropped = _binarize_crop(region, threshold=140)
     results = list(_get_values_model().predict(cropped))
     if results:
         return results[0]["rec_text"].strip()
@@ -262,11 +272,8 @@ def _ocr_value(panel: np.ndarray, ys: int, ye: int) -> str:
 
 def _ocr_label(panel: np.ndarray, ys: int, ye: int) -> str:
     region = panel[ys:ye, :]
-    # Crop to left 65% — in-game tip overlays bleed through the
-    # semi-transparent panel on the right side and corrupt OCR.
-    pw = region.shape[1]
-    region = region[:, :int(pw * 0.65)]
-    results = list(_get_labels_model().predict(region))
+    cropped = _binarize_crop(region, threshold=40)
+    results = list(_get_labels_model().predict(cropped))
     if results:
         return results[0]["rec_text"].strip()
     return ""
@@ -303,11 +310,13 @@ def _ocr_featured_stat(panel: np.ndarray, box: tuple[int, int, int, int]) -> Her
     h = featured.shape[0]
     split_y = int(h * 0.6)
 
-    val_region = _crop_to_text(featured[:split_y, :])
+    val_raw = featured[:split_y, :]
+    val_region = _binarize_crop(val_raw, threshold=140)
     vr = list(_get_featured_model().predict(val_region))
     val = vr[0]["rec_text"].strip() if vr else ""
 
-    lbl_region = featured[split_y:, :]
+    lbl_raw = featured[split_y:, :]
+    lbl_region = _binarize_crop(lbl_raw, threshold=40)
     lr = list(_get_labels_model().predict(lbl_region))
     lbl = lr[0]["rec_text"].strip() if lr else ""
 
