@@ -27,23 +27,34 @@ The featured stat sits in a darker rounded rectangle in the top-right of the pan
 2. Morphological close + open to clean the mask
 3. Find the largest contour → bounding rect = featured stat box
 
-**Structure:** Big value on top (~60% of box height), label text below (~40%). Split vertically, OCR each half separately.
+**Structure:** Value on top, label text below. Split by finding the last row with bright pixels (>180) — everything above is value, everything below is label. Only checks the right half of the box to avoid portrait bleed on the left.
+
+## Stats Area Detection
+
+The stats occupy the lower portion of the panel, below the portrait and hero name. The split point is found dynamically by scanning for brightness gaps:
+
+1. Scan vertically from 15% to 50% of screen height
+2. Find gaps where row max brightness < 50 (dark rows between text blocks)
+3. The **second** large gap (>10px) marks the transition from hero name to stat rows
+4. Everything below that gap is the stats area
+
+This adapts to different panel heights (more stats = taller panel) and works at both 4K and 1080p.
 
 ## Label-Value Separation
 
-Stat rows below the hero portrait follow a repeating pattern: bold white value, then smaller gray label underneath.
+Stat rows follow a repeating pattern: bold white value, then smaller gray label underneath.
 
-**Detection method:** Horizontal brightness projection.
+**Detection method:** Lightness-based contour classification.
 
-1. For each row of the panel, count pixels with brightness > 80
-2. Rows where bright pixel percentage > 1% of width are text rows
-3. Group consecutive text rows into blocks (merge gaps < 4px, discard blocks < 6px tall)
-4. Classify each block:
-   - Height > 100px → `header` (portrait + featured stat area)
-   - Average brightness of text pixels > 170 → `value` (white text)
-   - Otherwise → `label` (gray text)
+1. Threshold the stats area at brightness > 50 (above panel background ~7-22 and tip overlay bleed ~30)
+2. Find contours in the thresholded mask
+3. Classify each contour by maximum pixel brightness in its bounding box:
+   - Max brightness ≥ 180 → **value** (white text)
+   - Max brightness < 180 → **label** (gray text)
+4. Merge contours into rows (boxes with vertical gap < 3% of stats height)
+5. Pair each merged value row with the nearest label row below it (by bottom-of-value → top-of-label proximity)
 
-**Strip cutting:** Labels define the strip boundaries. Each stat strip spans from the bottom of the previous label (+ 6px padding) to the bottom of the current label (+ 6px padding). This gives consistent ~118px strips, each containing one value and one label.
+**OCR preparation:** Each value/label bbox is cropped with 30% height padding, thresholded (values at 140, labels at 50), padded with 5px black border, and fed to the appropriate model as a clean white-on-black image.
 
 ## OCR Models
 
@@ -65,7 +76,7 @@ Three separate PaddleOCR recognition models, finetuned from PP-OCRv5 server rec 
 - **Training data:** 5,000 synthetic samples, white text on black background, font sizes 32-60px (weighted toward 46px for 4K). Heavy oversampling of: zeros, standalone `1`, comma numbers, timer patterns
 - **Training config:** RecAug enabled, 100 epochs, LR 5e-5, batch 64
 - **Accuracy:** ~100% on synthetic val, **100% on real game screenshots** with proper cropping
-- **Inference:** Pad value row ±20px vertically, then crop to text bounds (bright pixels > 120, 10px padding) before feeding to model. This is critical — without cropping, thin glyphs like `1` are lost when the 869px strip is resized to 320px
+- **Inference:** Crop to contour bounding box with 30% height padding, threshold at 140, pad with 5px black border. The binarization removes background bleed and produces clean white-on-black matching training data
 
 ### Featured Model
 
@@ -74,7 +85,7 @@ Three separate PaddleOCR recognition models, finetuned from PP-OCRv5 server rec 
 - **Training data:** 5,000 synthetic samples, white text on black background, font sizes 48-96px (larger than regular values, weighted toward 80px for 4K). Heavy oversampling of timer patterns (MM:SS) and 0-vs-7 confusable pairs
 - **Training config:** RecAug pre-applied offline, 100 epochs, LR 5e-5, batch 64
 - **Accuracy:** 99.8% on synthetic val, correct on real screenshots including timer values
-- **Inference:** Same as values model — crop to text bounds before feeding to model
+- **Inference:** Same as values model — binarize and crop to text bounds before feeding to model
 
 The featured stat uses a completely different font from the regular stat values (Big Noodle Titling vs Futura No2 Demi Bold). The Futura-trained values model misread `01:09` as `71:` because the italic Noodle `0` looks like a Futura `7`.
 
@@ -96,7 +107,8 @@ Splitting by font eliminates cross-domain confusion:
 
 - **Clean white-on-black training data works better than varied colors.** A 69K model trained with color/background variations scored 99.5% on synthetic data but 0% on real game text — it overfit to PIL's font rendering. The 5K clean model generalizes perfectly.
 - **RecAug (PaddleOCR's built-in augmentation) helps generalization** through spatial perturbations (perspective, crop, TIA distortion). However, running it during training is extremely slow on Windows — it runs single-threaded on CPU and the GPU sits idle waiting (`avg_reader_cost` jumps from 0.002s to 0.15s+ per batch, doubling total training time). The recommended approach is to pre-apply RecAug to the training images as a separate offline step (`tools/preprocess_recaug.py`), then train without RecAug on the pre-augmented data. This decouples CPU augmentation from GPU training.
-- **Cropping to text bounds is essential for values.** PaddleOCR resizes all input to 48×320px. An 869px wide strip with a single `1` in the corner becomes invisible after resize.
+- **Binarization before OCR improves accuracy and removes background noise.** Thresholding to white-on-black matches the training data exactly, and eliminates faint bleed from in-game tip overlays that show through the semi-transparent panel.
+- **Contour-based bbox cropping** ensures each value/label is tightly framed regardless of resolution. The old full-strip approach lost thin glyphs like `1` when resized from 869px to 320px.
 
 ## Rank Detection
 

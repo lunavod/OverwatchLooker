@@ -142,8 +142,8 @@ def _detect_panel(img: np.ndarray) -> tuple[int, int, int, int] | None:
 
     b, g, r = cv2.split(roi)
     mask = (
-        (r >= 5) & (r <= 50) & (g >= 10) & (g <= 55) &
-        (b >= 25) & (b <= 80) & (b > r) & (b > g)
+        (r <= 50) & (g <= 55) &
+        (b >= 10) & (b <= 80) & (b > r) & (b > g)
     ).astype(np.uint8) * 255
 
     col_max_run = np.zeros(rw, dtype=int)
@@ -188,95 +188,80 @@ def _detect_panel(img: np.ndarray) -> tuple[int, int, int, int] | None:
 
 
 # ---------------------------------------------------------------------------
-# Row detection + classification
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _find_text_rows(gray: np.ndarray) -> list[tuple[int, int]]:
-    h, w = gray.shape
-    bright_pct = (gray > 80).sum(axis=1).astype(float) / w * 100
-    text_rows = bright_pct > 1.0
-    blocks: list[tuple[int, int]] = []
-    in_block = False
-    start = 0
-    for y in range(h):
-        if text_rows[y] and not in_block:
-            start = y
-            in_block = True
-        elif not text_rows[y] and in_block:
-            blocks.append((start, y))
-            in_block = False
-    if in_block:
-        blocks.append((start, h))
-    merged: list[tuple[int, int]] = []
-    for s, e in blocks:
-        if merged and s - merged[-1][1] < 4:
-            merged[-1] = (merged[-1][0], e)
-        else:
-            merged.append((s, e))
-    return [(s, e) for s, e in merged if e - s >= 6]
+# Text brightness thresholds (panel background is ~7-22, tip overlay is ~30)
+_TEXT_THRESH = 50       # minimum brightness to be considered text
+_VALUE_THRESH = 140     # minimum brightness for value text (white)
+_LABEL_THRESH = _TEXT_THRESH  # labels are dimmer gray text
 
 
-def _classify_rows(gray: np.ndarray, rows: list[tuple[int, int]]) -> list[tuple[int, int, str]]:
-    classified = []
-    for s, e in rows:
-        strip = gray[s:e, :]
-        bright = strip[strip > 80]
-        avg = bright.mean() if len(bright) > 0 else 0
-        if e - s > 100:
-            t = "header"
-        elif avg > 170:
-            t = "value"
-        else:
-            t = "label"
-        classified.append((s, e, t))
-    return classified
-
-
-# ---------------------------------------------------------------------------
-# Crop + OCR helpers
-# ---------------------------------------------------------------------------
-
-def _binarize_crop(img_bgr: np.ndarray, threshold: int = 120,
-                    pad: int = 10, border: int = 5) -> np.ndarray:
-    """Binarize, crop to text bounding box, and pad with black.
-
-    Produces clean white-on-black input matching the OCR models' training
-    data, and removes any faint background bleed (e.g. in-game tip overlays).
-    """
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+def _binarize_bbox(gray: np.ndarray, threshold: int,
+                   pad_frac: float = 0.3, min_pad: int = 10) -> np.ndarray:
+    """Binarize, crop to text bbox, pad with black. Returns BGR for model."""
     _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    text_ys, text_xs = np.where(binary > 0)
-    if len(text_ys) == 0:
-        return img_bgr
-    y1 = max(0, int(np.min(text_ys)) - pad)
-    y2 = min(binary.shape[0], int(np.max(text_ys)) + pad)
-    x1 = max(0, int(np.min(text_xs)) - pad)
-    x2 = min(binary.shape[1], int(np.max(text_xs)) + pad)
+    ys, xs = np.where(binary > 0)
+    if len(ys) == 0:
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    pad = max(min_pad, int((ys.max() - ys.min()) * pad_frac))
+    y1 = max(0, int(ys.min()) - pad)
+    y2 = min(binary.shape[0], int(ys.max()) + pad)
+    x1 = max(0, int(xs.min()) - pad)
+    x2 = min(binary.shape[1], int(xs.max()) + pad)
     cropped = binary[y1:y2, x1:x2]
-    padded = cv2.copyMakeBorder(cropped, border, border, border, border,
+    padded = cv2.copyMakeBorder(cropped, 5, 5, 5, 5,
                                 cv2.BORDER_CONSTANT, value=0)
     return cv2.cvtColor(padded, cv2.COLOR_GRAY2BGR)
 
 
-def _ocr_value(panel: np.ndarray, ys: int, ye: int) -> str:
-    h = panel.shape[0]
-    ys_pad = max(0, ys - 20)
-    ye_pad = min(h, ye + 20)
-    region = panel[ys_pad:ye_pad, :]
-    cropped = _binarize_crop(region, threshold=140)
-    results = list(_get_values_model().predict(cropped))
-    if results:
-        return results[0]["rec_text"].strip()
-    return ""
+def _merge_row_boxes(boxes: list[tuple[int, int, int, int]],
+                     gap_frac: float,
+                     panel_h: int) -> list[tuple[int, int, int, int]]:
+    """Merge bounding boxes into rows based on vertical proximity."""
+    if not boxes:
+        return []
+    rows: list[list[tuple[int, int, int, int]]] = [[boxes[0]]]
+    for b in boxes[1:]:
+        prev_bottom = max(bb[1] + bb[3] for bb in rows[-1])
+        if b[1] < prev_bottom + panel_h * gap_frac:
+            rows[-1].append(b)
+        else:
+            rows.append([b])
+    return [(min(b[0] for b in r), min(b[1] for b in r),
+             max(b[0] + b[2] for b in r) - min(b[0] for b in r),
+             max(b[1] + b[3] for b in r) - min(b[1] for b in r))
+            for r in rows]
 
 
-def _ocr_label(panel: np.ndarray, ys: int, ye: int) -> str:
-    region = panel[ys:ye, :]
-    cropped = _binarize_crop(region, threshold=40)
-    results = list(_get_labels_model().predict(cropped))
-    if results:
-        return results[0]["rec_text"].strip()
-    return ""
+def _find_stats_start(panel_gray: np.ndarray, panel_y: int,
+                      img_h: int) -> int:
+    """Find where stats begin by locating the second large brightness gap.
+
+    Gap 1: portrait → hero name.  Gap 2: hero name → first stat value.
+    Returns panel-relative y of the first stat row.
+    """
+    row_max = np.max(panel_gray, axis=1)
+    ph = panel_gray.shape[0]
+    gaps: list[tuple[int, int]] = []
+    in_gap = False
+    gap_start = 0
+    scan_start = max(0, int(img_h * 0.15) - panel_y)
+    scan_end = min(int(img_h * 0.50) - panel_y, ph)
+    for row_y in range(scan_start, scan_end):
+        if row_max[row_y] < _TEXT_THRESH:
+            if not in_gap:
+                gap_start = row_y
+                in_gap = True
+        else:
+            if in_gap and (row_y - gap_start) > 10:
+                gaps.append((gap_start, row_y))
+            in_gap = False
+    if len(gaps) >= 2:
+        return gaps[1][1]   # end of second gap (hero name → stats)
+    if len(gaps) == 1:
+        return gaps[0][1]
+    return int(ph * 0.35)   # fallback
 
 
 # ---------------------------------------------------------------------------
@@ -288,10 +273,9 @@ def _detect_featured_box(panel: np.ndarray) -> tuple[int, int, int, int] | None:
     top = panel[:h // 4, w // 3:]
     b, g, r = cv2.split(top)
     mask = (
-        (r >= 5) & (r <= 30) &
-        (g >= 10) & (g <= 35) &
-        (b >= 20) & (b <= 50) &
-        (b > r)
+        (r <= 20) &
+        (g <= 25) &
+        (b >= 15) & (b <= 40) & (b > r)
     ).astype(np.uint8) * 255
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)  # type: ignore[assignment]
@@ -304,20 +288,44 @@ def _detect_featured_box(panel: np.ndarray) -> tuple[int, int, int, int] | None:
     return (x + w // 3, y, cw, ch)
 
 
-def _ocr_featured_stat(panel: np.ndarray, box: tuple[int, int, int, int]) -> HeroStat | None:
+def _ocr_featured_stat(panel: np.ndarray,
+                       box: tuple[int, int, int, int]) -> HeroStat | None:
+    """OCR the featured stat from its detected box.
+
+    Finds actual text bounds inside the box, splits into value (bright)
+    and label (dim) regions by brightness.
+    """
     bx, by, bw, bh = box
     featured = panel[by:by + bh, bx:bx + bw]
-    h = featured.shape[0]
-    split_y = int(h * 0.6)
+    gray = cv2.cvtColor(featured, cv2.COLOR_BGR2GRAY)
 
-    val_raw = featured[:split_y, :]
-    val_region = _binarize_crop(val_raw, threshold=140)
-    vr = list(_get_featured_model().predict(val_region))
+    # Find actual text bounds inside the (possibly oversized) box
+    text_mask = (gray > _TEXT_THRESH).astype(np.uint8) * 255
+    ys, xs = np.where(text_mask > 0)
+    if len(ys) == 0:
+        return None
+    ty1 = max(0, int(ys.min()) - 5)
+    ty2 = min(gray.shape[0], int(ys.max()) + 5)
+    text_region = gray[ty1:ty2, :]
+
+    # Split into value (bright >180) and label (dim) by last bright row.
+    # Only check right half to avoid portrait bleed on the left.
+    right_half = text_region[:, text_region.shape[1] // 2:]
+    row_max = np.max(right_half, axis=1)
+    bright_rows = np.where(row_max > 180)[0]
+    if len(bright_rows) == 0:
+        return None
+    split = bright_rows[-1] + 1
+
+    # Value — use Otsu on the raw grayscale (adapts to resolution)
+    val_crop = _binarize_bbox(text_region[:split, :], threshold=_VALUE_THRESH)
+    vr = list(_get_featured_model().predict(val_crop))
     val = vr[0]["rec_text"].strip() if vr else ""
 
-    lbl_raw = featured[split_y:, :]
-    lbl_region = _binarize_crop(lbl_raw, threshold=40)
-    lr = list(_get_labels_model().predict(lbl_region))
+    # Label
+    lbl_gray = text_region[split:, :]
+    lbl_crop = _binarize_bbox(lbl_gray, threshold=_LABEL_THRESH)
+    lr = list(_get_labels_model().predict(lbl_crop))
     lbl = lr[0]["rec_text"].strip() if lr else ""
 
     if val or lbl:
@@ -332,8 +340,11 @@ def _ocr_featured_stat(panel: np.ndarray, box: tuple[int, int, int, int]) -> Her
 def read_hero_panel(img: np.ndarray) -> HeroPanelResult | None:
     """Extract hero stats from a tab screenshot.
 
-    Returns HeroPanelResult with featured stat + stat rows, or None if
-    no panel is detected.
+    Uses lightness-based text detection:
+    - Pixels > _TEXT_THRESH (50) are text
+    - Text with max brightness >= 180 is a value (white)
+    - Text with max brightness < 180 is a label (gray)
+    - Values and labels are paired by vertical proximity
     """
     rect = _detect_panel(img)
     if rect is None:
@@ -342,7 +353,7 @@ def read_hero_panel(img: np.ndarray) -> HeroPanelResult | None:
 
     px, py, pw, ph = rect
     panel = img[py:py + ph, px:px + pw]
-    gray = cv2.cvtColor(panel, cv2.COLOR_BGR2GRAY)
+    img_h = img.shape[0]
 
     stats: list[HeroStat] = []
 
@@ -353,32 +364,75 @@ def read_hero_panel(img: np.ndarray) -> HeroPanelResult | None:
         if featured:
             stats.append(featured)
 
-    # Regular stats — only rows below the header
-    rows = _find_text_rows(gray)
-    classified = _classify_rows(gray, rows)
-    header_end = 0
-    for s, e, t in classified:
-        if t == "header":
-            header_end = e
-    raw_values = [(s, e) for s, e, t in classified if t == "value" and s > header_end]
-    label_rows = [(s, e) for s, e, t in classified if t == "label" and s > header_end]
+    # Find where stat rows begin (after portrait + hero name)
+    panel_gray = cv2.cvtColor(panel, cv2.COLOR_BGR2GRAY)
+    stats_start = _find_stats_start(panel_gray, py, img_h)
+    stats_panel = panel[stats_start:, :]
+    gray = cv2.cvtColor(stats_panel, cv2.COLOR_BGR2GRAY)
+    sh, sw = gray.shape
 
-    # Merge consecutive value rows with small gaps (split glyphs like "2")
-    value_rows: list[tuple[int, int]] = []
-    for s, e in raw_values:
-        if value_rows and s - value_rows[-1][1] < 10:
-            value_rows[-1] = (value_rows[-1][0], e)
+    # Find text contours and classify as value or label by brightness
+    text_mask = (gray > _TEXT_THRESH).astype(np.uint8) * 255
+    min_box_h = max(5, int(sh * 0.005))
+    contours, _ = cv2.findContours(text_mask, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    value_boxes: list[tuple[int, int, int, int]] = []
+    label_boxes: list[tuple[int, int, int, int]] = []
+    for c in contours:
+        bx, by, bw, bh_c = cv2.boundingRect(c)
+        if bh_c < min_box_h or bw < min_box_h:
+            continue
+        if int(gray[by:by + bh_c, bx:bx + bw].max()) >= 180:
+            value_boxes.append((bx, by, bw, bh_c))
         else:
-            value_rows.append((s, e))
+            label_boxes.append((bx, by, bw, bh_c))
 
-    # Skip the first value (hero name row)
-    if value_rows:
-        value_rows = value_rows[1:]
+    value_boxes.sort(key=lambda b: b[1])
+    label_boxes.sort(key=lambda b: b[1])
 
-    n = min(len(value_rows), len(label_rows))
-    for i in range(n):
-        val = _ocr_value(panel, *value_rows[i])
-        lbl = _ocr_label(panel, *label_rows[i])
+    merged_vals = _merge_row_boxes(value_boxes, 0.03, sh)
+    merged_lbls = _merge_row_boxes(label_boxes, 0.03, sh)
+
+    # Pair: each value's bottom edge → nearest label top below it
+    used_labels: set[int] = set()
+    for vb in merged_vals:
+        v_bottom = vb[1] + vb[3]
+        best_i: int | None = None
+        best_dist = 999999
+        for i, lb in enumerate(merged_lbls):
+            if i in used_labels:
+                continue
+            d = lb[1] - v_bottom
+            if 0 < d < best_dist:
+                best_i = i
+                best_dist = d
+        if best_i is None:
+            continue
+        used_labels.add(best_i)
+        lb = merged_lbls[best_i]
+
+        # OCR value: threshold, pad, predict
+        vpad = max(3, int(vb[3] * 0.3))
+        val_gray = gray[max(0, vb[1] - vpad):min(sh, vb[1] + vb[3] + vpad),
+                        max(0, vb[0] - vpad):min(sw, vb[0] + vb[2] + vpad)]
+        _, val_bin = cv2.threshold(val_gray, _VALUE_THRESH, 255, cv2.THRESH_BINARY)
+        val_padded = cv2.copyMakeBorder(val_bin, 5, 5, 5, 5,
+                                        cv2.BORDER_CONSTANT, value=0)
+        vr = list(_get_values_model().predict(
+            cv2.cvtColor(val_padded, cv2.COLOR_GRAY2BGR)))
+        val = vr[0]["rec_text"].strip() if vr else ""
+
+        # OCR label: threshold, pad, predict
+        lpad = max(3, int(lb[3] * 0.3))
+        lbl_gray = gray[max(0, lb[1] - lpad):min(sh, lb[1] + lb[3] + lpad),
+                        max(0, lb[0] - lpad):min(sw, lb[0] + lb[2] + lpad)]
+        _, lbl_bin = cv2.threshold(lbl_gray, _LABEL_THRESH, 255, cv2.THRESH_BINARY)
+        lbl_padded = cv2.copyMakeBorder(lbl_bin, 5, 5, 5, 5,
+                                        cv2.BORDER_CONSTANT, value=0)
+        lr = list(_get_labels_model().predict(
+            cv2.cvtColor(lbl_padded, cv2.COLOR_GRAY2BGR)))
+        lbl = lr[0]["rec_text"].strip() if lr else ""
+
         stats.append(HeroStat(label=lbl, value=val))
 
     _logger.info(f"Hero panel OCR: {len(stats)} stats read")
