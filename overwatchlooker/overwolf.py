@@ -150,8 +150,8 @@ class RosterEntry:
     battlenet_tag: str
     is_local: bool
     is_teammate: bool
-    hero_name: str  # may be empty for enemies
-    hero_role: str  # may be empty for enemies
+    hero_name: str
+    hero_role: str
     team: int
     kills: int
     deaths: int
@@ -401,7 +401,7 @@ def _parse_message(raw: dict[str, Any]) -> list[OverwolfEvent]:
             elif name == "revive":
                 events.append(ReviveEvent(timestamp=ts))
             else:
-                _logger.debug(f"Unknown Overwolf event: {name}")
+                _logger.info(f"Unknown Overwolf event: {name} data={ev_data}")
 
     elif msg_type == "info_update":
         info = data.get("info", {})
@@ -413,7 +413,7 @@ def _parse_message(raw: dict[str, Any]) -> list[OverwolfEvent]:
                 events.append(GameStateUpdate(
                     state=GameState(gi["game_state"]), timestamp=ts))
             except ValueError:
-                _logger.debug(f"Unknown game_state: {gi['game_state']}")
+                _logger.info(f"Unknown game_state: {gi['game_state']}")
         if "game_mode" in gi:
             code = gi["game_mode"]
             padded = code.zfill(4) if code else code
@@ -429,13 +429,13 @@ def _parse_message(raw: dict[str, Any]) -> list[OverwolfEvent]:
                 events.append(GameTypeUpdate(
                     game_type=GameType(mi["game_type"]), timestamp=ts))
             except ValueError:
-                _logger.debug(f"Unknown game_type: {mi['game_type']}")
+                _logger.info(f"Unknown game_type: {mi['game_type']}")
         if "game_queue_type" in mi:
             try:
                 events.append(QueueTypeUpdate(
                     queue_type=QueueType(mi["game_queue_type"]), timestamp=ts))
             except ValueError:
-                _logger.debug(f"Unknown queue_type: {mi['game_queue_type']}")
+                _logger.info(f"Unknown queue_type: {mi['game_queue_type']}")
         if "map" in mi:
             code = mi["map"]
             events.append(MapUpdate(
@@ -448,7 +448,7 @@ def _parse_message(raw: dict[str, Any]) -> list[OverwolfEvent]:
                 events.append(MatchOutcomeUpdate(
                     outcome=MatchOutcome(mi["match_outcome"]), timestamp=ts))
             except ValueError:
-                _logger.debug(f"Unknown match_outcome: {mi['match_outcome']}")
+                _logger.info(f"Unknown match_outcome: {mi['match_outcome']}")
 
         # kill category
         ki = info.get("kill", {})
@@ -480,10 +480,10 @@ def _parse_message(raw: dict[str, Any]) -> list[OverwolfEvent]:
                     entry = RosterEntry.from_json(val)
                     events.append(RosterUpdate(slot=slot, entry=entry, timestamp=ts))
                 except (ValueError, json.JSONDecodeError, KeyError) as e:
-                    _logger.debug(f"Failed to parse {key}: {e}")
+                    _logger.info(f"Failed to parse {key}: {e}")
 
     else:
-        _logger.debug(f"Unknown Overwolf message type: {msg_type}")
+        _logger.info(f"Unknown Overwolf message type: {msg_type} data={data}")
 
     return events
 
@@ -564,7 +564,10 @@ class OverwolfReceiver:
                 try:
                     msg = json.loads(raw)
                 except (json.JSONDecodeError, TypeError):
-                    _logger.debug(f"Invalid JSON from Overwolf: {raw!r:.200}")
+                    _logger.info(f"Invalid JSON from Overwolf: {raw!r:.200}")
+                    continue
+                if msg.get("type") == "ping":
+                    await ws.send(json.dumps({"type": "pong"}))
                     continue
                 events = _parse_message(msg)
                 for event in events:

@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import websockets
 
-from overwatchlooker.ws_server import COMMANDS, EventBus, WsServer
+import numpy as np
+
+from overwatchlooker.ws_server import COMMANDS, EventBus, WsServer, _NumpyEncoder
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,22 @@ class TestAppRegistersCommands:
 # App emit integration — verify each event fires through the bus
 # ---------------------------------------------------------------------------
 
+class TestNumpyEncoder:
+    def test_int64(self):
+        assert json.loads(json.dumps({"v": np.int64(42)}, cls=_NumpyEncoder)) == {"v": 42}
+
+    def test_float32(self):
+        result = json.loads(json.dumps({"v": np.float32(3.14)}, cls=_NumpyEncoder))
+        assert abs(result["v"] - 3.14) < 0.001
+
+    def test_bool_(self):
+        assert json.loads(json.dumps({"v": np.bool_(True)}, cls=_NumpyEncoder)) == {"v": True}
+
+    def test_ndarray(self):
+        arr = np.array([1, 2, 3])
+        assert json.loads(json.dumps({"v": arr}, cls=_NumpyEncoder)) == {"v": [1, 2, 3]}
+
+
 class TestAppEmitsEvents:
     @pytest.fixture
     def bus(self):
@@ -218,6 +236,13 @@ class TestAppEmitsEvents:
         assert "Reinhardt" in state["hero_crops"]
 
     def test_on_hero_switch_emits(self, app, bus):
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry = RosterEntry(
+            player_name="Player1", battlenet_tag="Player1#1111",
+            is_local=False, is_teammate=True, hero_name="Ana", hero_role="SUPPORT",
+            team=0, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
         app._on_hero_switch("PLAYER1", "Mercy", 15.0)
         state = bus.get_state()
         assert state["hero_map"]["PLAYER1"] == "Mercy"

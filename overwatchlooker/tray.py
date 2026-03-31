@@ -113,6 +113,8 @@ class App:
         self._cooldown_until_tick: int = 0  # ignore tab/crop events until this tick
         self._poll_thread: threading.Thread | None = None
         self._poll_stop = threading.Event()
+        self._uploader_thread: threading.Thread | None = None
+        self._uploader_stop: threading.Event | None = None
         self._recording = False
         self._use_mcp = use_mcp
         self._auto_recording = auto_recording
@@ -246,26 +248,27 @@ class App:
         if isinstance(event, MapUpdate):
             ms.map_name = event.name
             ms.map_code = event.code
-            # Notify about unknown map codes so we can add them
-            if event.name.startswith("Unknown ("):
-                _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
-                if ms.mode in _REAL_MODES:
-                    show_notification("OverwatchLooker",
-                                      f"Unknown map code {event.code} (mode={ms.mode}). "
-                                      f"Please report!")
         elif isinstance(event, GameModeUpdate):
             ms.mode = event.name
             ms.mode_code = event.code
             self._try_start_score_system(event.name, ms.game_type)
-            if ms.map_name.startswith("Unknown ("):
-                _REAL_MODES = {"Escort", "Hybrid", "Control", "Push", "Clash", "Flashpoint"}
-                if event.name in _REAL_MODES:
-                    show_notification("OverwatchLooker",
-                                      f"Unknown map code {ms.map_code} (mode={event.name}). "
-                                      f"Please report!")
         elif isinstance(event, GameTypeUpdate):
             ms.game_type = event.game_type
-            self._try_start_score_system(ms.mode, event.game_type)
+            if event.game_type == GameType.PRACTICE:
+                if self._auto_recording_active:
+                    rec_dir = self._auto_recording_dir
+                    _logger.info("Auto-recording: stopping for PRACTICE match")
+                    self._auto_recording_stop()
+                    if rec_dir and rec_dir.exists():
+                        import shutil
+                        shutil.rmtree(rec_dir, ignore_errors=True)
+                        _logger.info(f"Auto-recording: deleted {rec_dir}")
+            if event.game_type == GameType.RANKED:
+                if self._control_score_system and self._control_score_system._active:
+                    self._control_score_system.stop()
+                    _logger.info("Control score detection disabled for ranked match")
+            else:
+                self._try_start_score_system(ms.mode, event.game_type)
         elif isinstance(event, QueueTypeUpdate):
             ms.queue_type = event.queue_type
         elif isinstance(event, PseudoMatchIdUpdate):
@@ -290,8 +293,11 @@ class App:
         entry = event.entry
         if not entry.player_name:
             return  # empty slot (post-match clear or vacant)
-        is_new = entry.player_name.upper() not in ms.players
-        player = ms.get_or_create_player(entry.player_name)
+        if not entry.battlenet_tag:
+            return  # no battletag — can't key this player
+        is_new = entry.battlenet_tag.upper() not in ms.players
+        player = ms.get_or_create_player(entry.battlenet_tag)
+        player.player_name = entry.player_name.upper()
         player.battletag = entry.battlenet_tag
         player.team = entry.team
         player.is_local = entry.is_local
@@ -562,6 +568,13 @@ class App:
         if snapshot.game_type in self._SKIP_GAME_TYPES:
             _logger.info(f"MCP: skipping {snapshot.game_type.value} match")
             return
+        if not snapshot.players:
+            _logger.info("MCP: skipping match with no players")
+            return
+        if snapshot.duration is not None and snapshot.duration < 60_000:
+            _logger.info(f"MCP: skipping match shorter than 1 minute "
+                         f"({snapshot.duration / 1000:.0f}s)")
+            return
         from overwatchlooker.config import MCP_URL
         if not MCP_URL:
             _logger.warning("--mcp flag set but MCP_URL not configured in .env")
@@ -581,6 +594,7 @@ class App:
             if match_id:
                 _logger.info(f"MCP: submitted match {match_id}")
                 self._ws_emit({"type": "mcp_submitted", "data": {"match_id": match_id}})
+                self._save_mcp_id_to_match_info(match_id)
             else:
                 _logger.info("MCP: submitted match (no ID returned)")
         except Exception as e:
@@ -711,6 +725,38 @@ class App:
         except Exception as e:
             _logger.warning(f"Failed to write match_info.json: {e}")
 
+    def _mark_recording_complete(self, rec_dir: Path | None) -> None:
+        """Set recording_complete=true in match_info.json after recording stops."""
+        if not rec_dir:
+            return
+        path = rec_dir / "match_info.json"
+        if not path.exists():
+            return
+        try:
+            import json
+            info = json.loads(path.read_text(encoding="utf-8"))
+            info["recording_complete"] = True
+            path.write_text(json.dumps(info, indent=2), encoding="utf-8")
+            _logger.info(f"Marked recording complete in {path}")
+        except Exception as e:
+            _logger.warning(f"Failed to mark recording complete: {e}")
+
+    def _save_mcp_id_to_match_info(self, match_id: str) -> None:
+        """Append mcp_id to the existing match_info.json."""
+        if not self._auto_recording_dir:
+            return
+        path = self._auto_recording_dir / "match_info.json"
+        if not path.exists():
+            return
+        try:
+            import json
+            info = json.loads(path.read_text(encoding="utf-8"))
+            info["mcp_id"] = match_id
+            path.write_text(json.dumps(info, indent=2), encoding="utf-8")
+            _logger.info(f"Saved mcp_id {match_id} to {path}")
+        except Exception as e:
+            _logger.warning(f"Failed to save mcp_id to match_info.json: {e}")
+
     def _auto_recording_schedule_stop(self) -> None:
         """Schedule auto-recording stop after the configured tail duration."""
         if not self._auto_recording_active:
@@ -729,9 +775,11 @@ class App:
         if not self._auto_recording_active or self._engine is None:
             return
         try:
+            rec_dir = self._auto_recording_dir
             self._engine.stop_recording()
             self._auto_recording_active = False
             self._auto_recording_dir = None
+            self._mark_recording_complete(rec_dir)
             self._recording = False
             if self._overwolf_system:
                 self._overwolf_system.clear_writer()
@@ -881,7 +929,10 @@ class App:
     def _on_hero_switch(self, player: str, hero: str, sim_time: float) -> None:
         """Callback when a hero switch is detected in subtitles."""
         ms = self._match_state
-        p = ms.get_or_create_player(player)
+        p = ms.find_player_by_name(player)
+        if p is None:
+            _logger.debug(f"Subtitle hero switch ignored: unknown player {player}")
+            return
         current = p.current_hero
         if current is None or _edit_distance(hero.lower(), current.lower()) > 2:
             p.hero_swaps.append(HeroSwap(
@@ -900,7 +951,10 @@ class App:
         """Callback when a player joins or leaves the game."""
         _logger.info(f"Chat player change: {player} {event} (t={sim_time:.1f}s)")
         ms = self._match_state
-        p = ms.get_or_create_player(player)
+        p = ms.find_player_by_name(player)
+        if p is None:
+            _logger.debug(f"Chat player change ignored: unknown player {player}")
+            return
         epoch_ms = int(sim_time * 1000)
         if event == "joined":
             p.joined_at = epoch_ms
@@ -978,32 +1032,42 @@ class App:
         stable_since: float | None = None
 
         while not self._poll_stop.is_set():
-            if self._engine is not None:
-                # Engine exists — monitor health
-                self._monitor_engine_health()
+            try:
+                if self._engine is not None:
+                    # Engine exists — monitor health
+                    self._monitor_engine_health()
+                    self._poll_stop.wait(_OW_POLL_INTERVAL)
+                    continue
+
+                ow_present = self._is_overwatch_running()
+
+                if ow_present:
+                    if stable_since is None:
+                        stable_since = time.monotonic()
+                        _logger.info("Overwatch window detected, waiting for stability...")
+                    elif time.monotonic() - stable_since >= _OW_STABILITY_TIME:
+                        # Stable long enough — create engine and start
+                        try:
+                            self._create_engine_and_start()
+                            stable_since = None
+                        except Exception as e:
+                            _logger.error(f"Failed to create capture engine: {e}")
+                            stable_since = None
+                else:
+                    if stable_since is not None:
+                        _logger.info("Overwatch window disappeared during stability wait")
+                        stable_since = None
+
                 self._poll_stop.wait(_OW_POLL_INTERVAL)
-                continue
-
-            ow_present = self._is_overwatch_running()
-
-            if ow_present:
-                if stable_since is None:
-                    stable_since = time.monotonic()
-                    _logger.info("Overwatch window detected, waiting for stability...")
-                elif time.monotonic() - stable_since >= _OW_STABILITY_TIME:
-                    # Stable long enough — create engine and start
-                    try:
-                        self._create_engine_and_start()
-                        stable_since = None
-                    except Exception as e:
-                        _logger.error(f"Failed to create capture engine: {e}")
-                        stable_since = None
-            else:
-                if stable_since is not None:
-                    _logger.info("Overwatch window disappeared during stability wait")
-                    stable_since = None
-
-            self._poll_stop.wait(_OW_POLL_INTERVAL)
+            except Exception:
+                _logger.exception("Unexpected error in OW polling loop")
+                # Tear down engine if it exists so we can retry cleanly
+                try:
+                    self._tear_down_engine()
+                except Exception:
+                    self._engine = None
+                    self._tick_loop = None
+                self._poll_stop.wait(_OW_POLL_INTERVAL)
 
     def _create_engine_and_start(self) -> None:
         """Create a memoir CaptureEngine targeting Overwatch and start the tick loop."""
@@ -1081,7 +1145,11 @@ class App:
         """Check if the engine has faulted (e.g. OW closed)."""
         if self._engine is None:
             return
-        err = self._engine.get_last_error()
+        try:
+            err = self._engine.get_last_error()
+        except Exception as exc:
+            _logger.warning(f"Failed to query engine error state: {exc}")
+            err = str(exc)
         if err:
             _logger.warning(f"Capture engine error: {err}")
             self._tear_down_engine()
@@ -1189,6 +1257,13 @@ class App:
             self._poll_thread.start()
             detect_mode = "subtitle"
 
+            # Start background recording uploader
+            if self._auto_recording:
+                from overwatchlooker.recording_uploader import start_background
+                log_dir = Path(__file__).parent.parent / "logs"
+                self._uploader_thread, self._uploader_stop = start_background(
+                    _AUTO_RECORDINGS_DIR, log_dir=log_dir)
+
         print_status(f"Listening (detection={detect_mode}). Tab=screenshot.")
         self._ws_emit({"type": "state", "active": True})
 
@@ -1210,6 +1285,12 @@ class App:
         if self._tick_loop:
             self._tick_loop.stop()
             self._tick_loop = None
+
+        # Stop background uploader
+        if self._uploader_stop:
+            self._uploader_stop.set()
+            self._uploader_stop = None
+            self._uploader_thread = None
 
         print_status("Stopped listening.")
         self._ws_emit({"type": "state", "active": False})

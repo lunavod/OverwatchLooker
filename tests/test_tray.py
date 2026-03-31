@@ -7,10 +7,24 @@ import pytest
 from memoir_capture import MetaFile, MetaHeader, MetaKeyEntry, MetaRow
 
 
+def _add_roster_player(app, name, tag, *, local=False, teammate=True, hero="",
+                       role="", team=0, slot=0, k=0, d=0, a=0, dmg=0, heal=0, mit=0, ts=1000):
+    """Add a player via roster update."""
+    from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+    entry = RosterEntry(
+        player_name=name, battlenet_tag=tag,
+        is_local=local, is_teammate=teammate,
+        hero_name=hero, hero_role=role, team=team,
+        kills=k, deaths=d, assists=a,
+        damage=dmg, healed=heal, mitigated=mit,
+    )
+    app._on_overwolf_event(RosterUpdate(slot=slot, entry=entry, timestamp=ts))
+
+
 def _seed_match(app):
     """Give the match state enough data so _trigger_match_end won't skip it."""
     app._match_state.started_at = 1000
-    app._on_hero_switch("_SEED_", "Test", 0.0)
+    _add_roster_player(app, "Seed", "Seed#0000", hero="Test", slot=9)
 
 
 def _make_trigger_sync(app):
@@ -60,29 +74,39 @@ class TestMatchStateLifecycle:
         app.store_valid_tab(b"png2", 2.0, "tab2.png")
         assert app._match_state.latest_tab.filename == "tab2.png"
 
-    def test_hero_switch_creates_player(self, app):
+    def test_hero_switch_updates_player(self, app):
+        _add_roster_player(app, "Player1", "Player1#1111", slot=0)
         app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
-        p = app._match_state.players["PLAYER1"]
+        p = app._match_state.players["PLAYER1#1111"]
         assert p.current_hero == "Reinhardt"
-        assert len(p.hero_swaps) == 1
 
     def test_hero_switch_dedup(self, app):
-        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
+        _add_roster_player(app, "Player1", "Player1#1111", hero="Reinhardt", slot=0)
         app._on_hero_switch("PLAYER1", "Reinhardt", 11.0)
-        assert len(app._match_state.players["PLAYER1"].hero_swaps) == 1
+        assert len(app._match_state.players["PLAYER1#1111"].hero_swaps) == 1
 
     def test_hero_switch_different_hero(self, app):
-        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
+        _add_roster_player(app, "Player1", "Player1#1111", hero="Reinhardt", slot=0)
         app._on_hero_switch("PLAYER1", "Winston", 20.0)
-        assert len(app._match_state.players["PLAYER1"].hero_swaps) == 2
+        assert len(app._match_state.players["PLAYER1#1111"].hero_swaps) == 2
+
+    def test_hero_switch_ignored_unknown_player(self, app):
+        app._on_hero_switch("UNKNOWN", "Reinhardt", 10.0)
+        assert len(app._match_state.players) == 0
 
     def test_player_change_joined(self, app):
+        _add_roster_player(app, "Player1", "Player1#1111", slot=0)
         app._on_player_change("PLAYER1", "joined", 5.0)
-        assert app._match_state.players["PLAYER1"].joined_at == 5000
+        assert app._match_state.players["PLAYER1#1111"].joined_at == 5000
 
     def test_player_change_left(self, app):
+        _add_roster_player(app, "Player1", "Player1#1111", slot=0)
         app._on_player_change("PLAYER1", "left", 10.0)
-        assert app._match_state.players["PLAYER1"].left_at == 10000
+        assert app._match_state.players["PLAYER1#1111"].left_at == 10000
+
+    def test_player_change_ignored_unknown_player(self, app):
+        app._on_player_change("UNKNOWN", "joined", 5.0)
+        assert len(app._match_state.players) == 0
 
 
 class TestOverwolfEventHandling:
@@ -101,6 +125,26 @@ class TestOverwolfEventHandling:
         from overwatchlooker.overwolf import GameTypeUpdate, GameType
         app._on_overwolf_event(GameTypeUpdate(game_type=GameType.RANKED, timestamp=1000))
         assert app._match_state.game_type == GameType.RANKED
+
+    def test_practice_stops_auto_recording(self, app, tmp_path):
+        from overwatchlooker.overwolf import GameTypeUpdate, GameType
+        rec_dir = tmp_path / "rec"
+        rec_dir.mkdir()
+        (rec_dir / "recording.mp4").write_bytes(b"fake")
+        app._auto_recording_active = True
+        app._auto_recording_dir = rec_dir
+        app._engine = MagicMock()
+        app._on_overwolf_event(GameTypeUpdate(game_type=GameType.PRACTICE, timestamp=1000))
+        assert not app._auto_recording_active
+        assert not rec_dir.exists()
+
+    def test_ranked_disables_control_score(self, app):
+        from overwatchlooker.overwolf import GameTypeUpdate, GameType
+        mock_css = MagicMock()
+        mock_css._active = True
+        app._control_score_system = mock_css
+        app._on_overwolf_event(GameTypeUpdate(game_type=GameType.RANKED, timestamp=1000))
+        mock_css.stop.assert_called_once()
 
     def test_queue_type_update(self, app):
         from overwatchlooker.overwolf import QueueTypeUpdate, QueueType
@@ -138,7 +182,7 @@ class TestOverwolfEventHandling:
             damage=1000, healed=0, mitigated=500,
         )
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
-        p = app._match_state.players["TESTPLAYER"]
+        p = app._match_state.players["TEST#1234"]
         assert p.battletag == "Test#1234"
         assert p.is_local is True
         assert p.current_hero == "Reinhardt"
@@ -154,11 +198,11 @@ class TestOverwolfEventHandling:
             team=0, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
         )
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=1000))
-        assert len(app._match_state.players["P1"].hero_swaps) == 1
+        assert len(app._match_state.players["P1#1"].hero_swaps) == 1
 
         # Same hero — no new swap
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=2000))
-        assert len(app._match_state.players["P1"].hero_swaps) == 1
+        assert len(app._match_state.players["P1#1"].hero_swaps) == 1
 
         # Different hero
         entry2 = RosterEntry(
@@ -167,7 +211,7 @@ class TestOverwolfEventHandling:
             team=0, kills=1, deaths=0, assists=0, damage=100, healed=0, mitigated=0,
         )
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry2, timestamp=3000))
-        assert len(app._match_state.players["P1"].hero_swaps) == 2
+        assert len(app._match_state.players["P1#1"].hero_swaps) == 2
 
     def test_team_side_resolution(self, app):
         from overwatchlooker.overwolf import RosterUpdate, RosterEntry
@@ -185,8 +229,8 @@ class TestOverwolfEventHandling:
         )
         app._on_overwolf_event(RosterUpdate(slot=0, entry=local, timestamp=1000))
         app._on_overwolf_event(RosterUpdate(slot=5, entry=enemy, timestamp=1000))
-        assert app._match_state.players["LOCAL"].team_side == TeamSide.ALLY
-        assert app._match_state.players["ENEMY"].team_side == TeamSide.ENEMY
+        assert app._match_state.players["L#1"].team_side == TeamSide.ALLY
+        assert app._match_state.players["E#1"].team_side == TeamSide.ENEMY
 
     @patch("overwatchlooker.tray.show_notification")
     @patch("overwatchlooker.display.print_analysis")
@@ -194,7 +238,7 @@ class TestOverwolfEventHandling:
         from overwatchlooker.overwolf import MatchOutcomeUpdate, MatchOutcome, MatchStartEvent
         # Need a started match with players for trigger to fire
         app._on_overwolf_event(MatchStartEvent(timestamp=1000))
-        app._on_hero_switch("PLAYER1", "Ana", 1.0)
+        _add_roster_player(app, "Player1", "Player1#1111", hero="Ana", slot=0)
         app._on_overwolf_event(MatchOutcomeUpdate(
             outcome=MatchOutcome.VICTORY, timestamp=5000))
         # Match state should be reset (new empty state)
@@ -206,7 +250,7 @@ class TestOverwolfEventHandling:
         from overwatchlooker.overwolf import MatchEndEvent, MatchOutcomeUpdate, MatchOutcome, MatchStartEvent
         # Need a started match with players for trigger to fire
         app._on_overwolf_event(MatchStartEvent(timestamp=1000))
-        app._on_hero_switch("PLAYER1", "Ana", 1.0)
+        _add_roster_player(app, "Player1", "Player1#1111", hero="Ana", slot=0)
         app._on_overwolf_event(MatchEndEvent(timestamp=5000))
         # First trigger resets state
         first_state = app._match_state
@@ -237,7 +281,7 @@ class TestOverwolfEventHandling:
             team=1, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
         )
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
-        assert len(app._match_state.players["PLAYER1"].hero_swaps) == 0
+        assert len(app._match_state.players["P1#1"].hero_swaps) == 0
 
     def test_hero_name_resolved_via_match(self, app):
         """Overwolf hero names like JETPACKCAT should resolve to canonical names."""
@@ -248,7 +292,7 @@ class TestOverwolfEventHandling:
             team=1, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
         )
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
-        assert app._match_state.players["PLAYER1"].current_hero == "Jetpack Cat"
+        assert app._match_state.players["P1#1"].current_hero == "Jetpack Cat"
 
     @patch("overwatchlooker.tray.show_notification")
     @patch("overwatchlooker.display.print_analysis")
@@ -256,7 +300,7 @@ class TestOverwolfEventHandling:
         """MatchOutcomeUpdate should set ended_at if not already set."""
         from overwatchlooker.overwolf import MatchOutcomeUpdate, MatchOutcome, MatchStartEvent
         app._on_overwolf_event(MatchStartEvent(timestamp=1000))
-        app._on_hero_switch("PLAYER1", "Ana", 1.0)
+        _add_roster_player(app, "Player1", "Player1#1111", hero="Ana", slot=0)
         app._on_overwolf_event(MatchOutcomeUpdate(
             outcome=MatchOutcome.DEFEAT, timestamp=50000))
         # State was reset, but we can check the snapshot wasn't created with None ended_at
@@ -385,8 +429,8 @@ class TestAnalysisFlow:
     def test_match_state_reset_after_detection(self, mock_print, mock_notif, app):
         """After detection triggers, match state is reset for next match."""
         _seed_match(app)
-        app._on_hero_switch("PLAYER1", "Reinhardt", 10.0)
-        assert "PLAYER1" in app._match_state.players
+        _add_roster_player(app, "Player1", "Player1#1111", hero="Reinhardt", slot=0)
+        assert "PLAYER1#1111" in app._match_state.players
         app._on_detection("VICTORY")
         # State is reset
         assert len(app._match_state.players) == 0
@@ -410,6 +454,69 @@ class TestAnalysisFlow:
         with patch("overwatchlooker.tray.show_notification"):
             app._on_toggle_recording(None, None)
         app._bus.emit.assert_called_with({"type": "state", "recording": False})
+
+
+class TestMcpSubmitGuards:
+    @pytest.fixture
+    def mcp_app(self):
+        from overwatchlooker.tray import App
+        a = App(use_mcp=True)
+        return a
+
+    def test_skip_no_players(self, mcp_app):
+        from overwatchlooker.match_state import MatchState
+        snap = MatchState(started_at=1000, ended_at=600000)
+        with patch("overwatchlooker.tray.build_mcp_payload") as mock_build:
+            mcp_app._submit_to_mcp(snap)
+            mock_build.assert_not_called()
+
+    def test_skip_short_duration(self, mcp_app):
+        from overwatchlooker.match_state import MatchState
+        snap = MatchState(started_at=1000, ended_at=50000)  # 49s
+        snap.get_or_create_player("P#1")
+        with patch("overwatchlooker.tray.build_mcp_payload") as mock_build:
+            mcp_app._submit_to_mcp(snap)
+            mock_build.assert_not_called()
+
+
+class TestMatchInfoHelpers:
+    def test_mark_recording_complete(self, tmp_path):
+        import json
+        from overwatchlooker.tray import App
+        a = App()
+        rec_dir = tmp_path / "rec"
+        rec_dir.mkdir()
+        info_path = rec_dir / "match_info.json"
+        info_path.write_text(json.dumps({"map": "Ilios"}), encoding="utf-8")
+        a._mark_recording_complete(rec_dir)
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+        assert data["recording_complete"] is True
+        assert data["map"] == "Ilios"
+
+    def test_mark_recording_complete_no_dir(self):
+        from overwatchlooker.tray import App
+        a = App()
+        a._mark_recording_complete(None)  # should not raise
+
+    def test_save_mcp_id(self, tmp_path):
+        import json
+        from overwatchlooker.tray import App
+        a = App()
+        rec_dir = tmp_path / "rec"
+        rec_dir.mkdir()
+        info_path = rec_dir / "match_info.json"
+        info_path.write_text(json.dumps({"map": "Ilios"}), encoding="utf-8")
+        a._auto_recording_dir = rec_dir
+        a._save_mcp_id_to_match_info("abc-123")
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+        assert data["mcp_id"] == "abc-123"
+        assert data["map"] == "Ilios"
+
+    def test_save_mcp_id_no_recording_dir(self):
+        from overwatchlooker.tray import App
+        a = App()
+        a._auto_recording_dir = None
+        a._save_mcp_id_to_match_info("abc-123")  # should not raise
 
 
 class TestMemoirInputSource:

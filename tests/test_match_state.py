@@ -32,17 +32,34 @@ class TestMatchStateCreation:
 
     def test_get_or_create_player_new(self):
         ms = MatchState()
-        p = ms.get_or_create_player("TestPlayer")
-        assert p.player_name == "TESTPLAYER"
-        assert "TESTPLAYER" in ms.players
+        p = ms.get_or_create_player("Test#1234")
+        assert p.player_name == "TEST#1234"
+        assert "TEST#1234" in ms.players
 
     def test_get_or_create_player_existing(self):
         ms = MatchState()
-        p1 = ms.get_or_create_player("TestPlayer")
+        p1 = ms.get_or_create_player("Test#1234")
         p1.battletag = "Test#1234"
-        p2 = ms.get_or_create_player("testplayer")
+        p2 = ms.get_or_create_player("test#1234")
         assert p2 is p1
         assert p2.battletag == "Test#1234"
+
+    def test_find_player_by_name(self):
+        ms = MatchState()
+        p = ms.get_or_create_player("Test#1234")
+        found = ms.find_player_by_name("Test")
+        assert found is p
+
+    def test_find_player_by_name_case_insensitive(self):
+        ms = MatchState()
+        p = ms.get_or_create_player("Test#1234")
+        found = ms.find_player_by_name("test")
+        assert found is p
+
+    def test_find_player_by_name_not_found(self):
+        ms = MatchState()
+        ms.get_or_create_player("Test#1234")
+        assert ms.find_player_by_name("Other") is None
 
     def test_local_player_none(self):
         ms = MatchState()
@@ -50,7 +67,7 @@ class TestMatchStateCreation:
 
     def test_local_player_found(self):
         ms = MatchState()
-        p = ms.get_or_create_player("Me")
+        p = ms.get_or_create_player("Me#1234")
         p.is_local = True
         assert ms.local_player is p
 
@@ -90,9 +107,9 @@ class TestTeamSideResolution:
     def test_resolve_team_sides(self):
         ms = MatchState()
         ms._local_team = 0
-        p_ally = ms.get_or_create_player("Ally")
+        p_ally = ms.get_or_create_player("Ally#1111")
         p_ally.team = 0
-        p_enemy = ms.get_or_create_player("Enemy")
+        p_enemy = ms.get_or_create_player("Enemy#2222")
         p_enemy.team = 1
         ms.resolve_team_sides()
         assert p_ally.team_side == TeamSide.ALLY
@@ -100,7 +117,7 @@ class TestTeamSideResolution:
 
     def test_resolve_no_local_team(self):
         ms = MatchState()
-        p = ms.get_or_create_player("Player")
+        p = ms.get_or_create_player("Player#1234")
         p.team = 0
         ms.resolve_team_sides()
         assert p.team_side is None
@@ -109,12 +126,12 @@ class TestTeamSideResolution:
 class TestSnapshot:
     def test_snapshot_deep_copies(self):
         ms = MatchState(map_name="King's Row")
-        p = ms.get_or_create_player("Player")
+        p = ms.get_or_create_player("Player#1234")
         p.hero_swaps.append(HeroSwap(hero="Ana", detected_at=1000,
                                       source=HeroSource.SUBTITLE_OCR))
         snap = ms.snapshot()
         assert snap.map_name == "King's Row"
-        assert len(snap.players["PLAYER"].hero_swaps) == 1
+        assert len(snap.players["PLAYER#1234"].hero_swaps) == 1
         # Modifying original doesn't affect snapshot
         ms.map_name = "Dorado"
         assert snap.map_name == "King's Row"
@@ -146,7 +163,8 @@ class TestFormatMatchState:
         ms._local_team = 0
 
         # Allies
-        tank = ms.get_or_create_player("LUNAVOD")
+        tank = ms.get_or_create_player("LUNAVOD#1234")
+        tank.player_name = "LUNAVOD"
         tank.battletag = "LUNAVOD#1234"
         tank.team = 0
         tank.team_side = TeamSide.ALLY
@@ -158,7 +176,8 @@ class TestFormatMatchState:
         tank.stats = StatsSnapshot(kills=15, deaths=3, assists=8,
                                    damage=12500, healing=0, mitigation=8900)
 
-        dps = ms.get_or_create_player("PLAYER2")
+        dps = ms.get_or_create_player("PLAYER2#5678")
+        dps.player_name = "PLAYER2"
         dps.battletag = "PLAYER2#5678"
         dps.team = 0
         dps.team_side = TeamSide.ALLY
@@ -170,7 +189,8 @@ class TestFormatMatchState:
                                   damage=6200, healing=0, mitigation=0)
 
         # Enemy
-        enemy = ms.get_or_create_player("ENEMY1")
+        enemy = ms.get_or_create_player("ENEMY1#9999")
+        enemy.player_name = "ENEMY1"
         enemy.battletag = "ENEMY1#9999"
         enemy.team = 1
         enemy.team_side = TeamSide.ENEMY
@@ -249,7 +269,7 @@ class TestFormatMatchState:
     def test_format_contains_hero_panel_stats(self):
         from overwatchlooker.match_state import HeroPanel
         ms = self._make_match()
-        local = ms.players["LUNAVOD"]
+        local = ms.players["LUNAVOD#1234"]
         local.is_local = True
         local.hero_panels = [HeroPanel(
             hero_name="Reinhardt", crop_png=b"",
@@ -282,7 +302,8 @@ class TestBuildMcpPayload:
         )
         ms._local_team = 0
 
-        tank = ms.get_or_create_player("LUNAVOD")
+        tank = ms.get_or_create_player("LUNAVOD#1234")
+        tank.player_name = "LUNAVOD"
         tank.battletag = "LUNAVOD#1234"
         tank.team = 0
         tank.team_side = TeamSide.ALLY
@@ -295,7 +316,8 @@ class TestBuildMcpPayload:
         tank.stats = StatsSnapshot(kills=15, deaths=3, assists=8,
                                    damage=12500, healing=0, mitigation=8900)
 
-        enemy = ms.get_or_create_player("ENEMY1")
+        enemy = ms.get_or_create_player("ENEMY1#9999")
+        enemy.player_name = "ENEMY1"
         enemy.battletag = "ENEMY1#9999"
         enemy.team = 1
         enemy.team_side = TeamSide.ENEMY
@@ -332,7 +354,8 @@ class TestBuildMcpPayload:
 
     def test_player_role_dps(self):
         ms = self._make_match()
-        dps = ms.get_or_create_player("DPS1")
+        dps = ms.get_or_create_player("DPS1#1111")
+        dps.player_name = "DPS1"
         dps.battletag = "DPS1#1111"
         dps.team = 0
         dps.team_side = TeamSide.ALLY
@@ -361,7 +384,7 @@ class TestBuildMcpPayload:
 
     def test_hero_panel_stats_attached(self):
         ms = self._make_match()
-        local = ms.players["LUNAVOD"]
+        local = ms.players["LUNAVOD#1234"]
         local.hero_panels = [HeroPanel(
             hero_name="Reinhardt", crop_png=b"",
             ocr_stats=[
@@ -402,7 +425,8 @@ class TestBuildMcpPayload:
         """Players whose slot was taken by a replacement are excluded."""
         ms = self._make_match()
         # Disconnected support on slot 5 — left mid-match with some stats
-        dc = ms.get_or_create_player("DISCONNECTED")
+        dc = ms.get_or_create_player("Disconnected#1111")
+        dc.player_name = "DISCONNECTED"
         dc.battletag = "Disconnected#1111"
         dc.team = 0
         dc.team_side = TeamSide.ALLY
@@ -414,7 +438,8 @@ class TestBuildMcpPayload:
             HeroSwap(hero="Mercy", detected_at=1000, source=HeroSource.OVERWOLF_ROSTER),
         ]
         # Replacement takes the same slot later
-        repl = ms.get_or_create_player("REPLACEMENT")
+        repl = ms.get_or_create_player("Replacement#2222")
+        repl.player_name = "REPLACEMENT"
         repl.battletag = "Replacement#2222"
         repl.team = 0
         repl.team_side = TeamSide.ALLY
@@ -445,9 +470,9 @@ class TestBuildMcpPayload:
         """Cumulative stats at each hero swap are included."""
         ms = self._make_match()
         # Give the tank's swaps stats_at_detection
-        ms.players["LUNAVOD"].hero_swaps[0].stats_at_detection = StatsSnapshot(
+        ms.players["LUNAVOD#1234"].hero_swaps[0].stats_at_detection = StatsSnapshot(
             kills=0, deaths=0, assists=0, damage=0, healing=0, mitigation=0)
-        ms.players["LUNAVOD"].hero_swaps[1].stats_at_detection = StatsSnapshot(
+        ms.players["LUNAVOD#1234"].hero_swaps[1].stats_at_detection = StatsSnapshot(
             kills=8, deaths=2, assists=4, damage=6000, healing=0, mitigation=4000)
         payload = build_mcp_payload(ms)
         tank = next(p for p in payload["players"] if p["player_name"] == "LUNAVOD#1234")
@@ -479,14 +504,14 @@ class TestBuildMcpPayload:
     def test_joined_at(self):
         ms = self._make_match()
         # Player joined 30s into the match
-        ms.players["ENEMY1"].joined_at = 30000
+        ms.players["ENEMY1#9999"].joined_at = 30000
         payload = build_mcp_payload(ms)
         enemy = next(p for p in payload["players"] if p["player_name"] == "ENEMY1#9999")
         assert enemy["joined_at"] == 30
 
     def test_in_party_flag(self):
         ms = self._make_match()
-        ms.players["LUNAVOD"].in_party = True
+        ms.players["LUNAVOD#1234"].in_party = True
         payload = build_mcp_payload(ms)
         tank = next(p for p in payload["players"] if p["player_name"] == "LUNAVOD#1234")
         assert tank["in_party"] is True
@@ -495,7 +520,7 @@ class TestBuildMcpPayload:
 
     def test_format_contains_party_marker(self):
         ms = self._make_match()
-        ms.players["LUNAVOD"].in_party = True
+        ms.players["LUNAVOD#1234"].in_party = True
         output = format_match_state(ms)
         assert "[P]" in output
 

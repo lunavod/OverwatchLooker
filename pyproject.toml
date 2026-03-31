@@ -11,7 +11,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "python-dotenv>=1.0.0",
     "easyocr>=1.7.0",
-    "opencv-python>=4.8.0",
+    "opencv-contrib-python>=4.8.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "proc-tap>=1.0.0",
@@ -25,7 +25,9 @@ dependencies = [
     "pytesseract-api>=1.0.4",
     "websockets>=16.0",
     "mcp>=1.0.0",
-    "memoir-capture>=0.1.3",
+    "pypdfium2>=4.0.0",
+    "paddlex>=3.4.2",
+    "memoir-capture>=0.1.4",
 ]
 
 [tool.pytest.ini_options]

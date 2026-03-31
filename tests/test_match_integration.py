@@ -277,14 +277,15 @@ class TestTeams:
         assert len(enemies) == 5
 
     def test_all_allies_have_team_side(self, scenario):
-        for name in ["YOURNAME", "DPSPLAYER1", "DPSPLAYER2", "HEALER1",
-                      "RAGEQUIT", "REPLACEMENT"]:
-            assert scenario.players[name].team_side == TeamSide.ALLY
+        for tag in ["YOURNAME#1234", "DPSPLAYER1#2222", "DPSPLAYER2#3333",
+                     "HEALER1#4444", "RAGEQUIT#5555", "REPLACEMENT#1111"]:
+            assert scenario.players[tag].team_side == TeamSide.ALLY
 
     def test_all_enemies_have_team_side(self, scenario):
-        for i in range(1, 6):
-            name = f"ENEMY{i}"
-            assert scenario.players[name].team_side == TeamSide.ENEMY
+        tags = {"ENEMY1#6666": 1, "ENEMY2#7777": 2, "ENEMY3#8888": 3,
+                "ENEMY4#9999": 4, "ENEMY5#0000": 5}
+        for tag in tags:
+            assert scenario.players[tag].team_side == TeamSide.ENEMY
 
 
 class TestLocalPlayer:
@@ -343,37 +344,37 @@ class TestHeroSwaps:
         assert scenario.local_player.current_hero == "Winston"
 
     def test_dps_hero_unchanged(self, scenario):
-        dps = scenario.players["DPSPLAYER1"]
+        dps = scenario.players["DPSPLAYER1#2222"]
         assert len(dps.hero_swaps) == 1
         assert dps.current_hero == "Tracer"
 
 
 class TestPlayerLeaveAndReplace:
     def test_ragequit_left_at(self, scenario):
-        rq = scenario.players["RAGEQUIT"]
+        rq = scenario.players["RAGEQUIT#5555"]
         assert rq.left_at == 90000  # from chat OCR at sim_time=90.0
 
     def test_ragequit_last_stats(self, scenario):
-        rq = scenario.players["RAGEQUIT"]
+        rq = scenario.players["RAGEQUIT#5555"]
         assert rq.stats.kills == 1
         assert rq.stats.deaths == 4
         assert rq.stats.healing == 3200
 
     def test_ragequit_hero_was_lucio(self, scenario):
-        rq = scenario.players["RAGEQUIT"]
+        rq = scenario.players["RAGEQUIT#5555"]
         assert rq.hero_swaps[0].hero == "Lucio"
 
     def test_replacement_joined_at(self, scenario):
-        rep = scenario.players["REPLACEMENT"]
-        assert rep.joined_at == 100000  # from chat OCR at sim_time=100.0
+        rep = scenario.players["REPLACEMENT#1111"]
+        assert rep.joined_at == _ts(105000)  # from first roster update
 
     def test_replacement_hero(self, scenario):
-        rep = scenario.players["REPLACEMENT"]
+        rep = scenario.players["REPLACEMENT#1111"]
         assert rep.current_hero == "Kiriko"
         assert rep.role == PlayerRole.SUPPORT
 
     def test_replacement_is_ally(self, scenario):
-        rep = scenario.players["REPLACEMENT"]
+        rep = scenario.players["REPLACEMENT#1111"]
         assert rep.team_side == TeamSide.ALLY
         assert rep.team == 0
 
@@ -388,13 +389,13 @@ class TestTabScreenshots:
 class TestEnemyPlayers:
     def test_enemy_no_hero_info(self, scenario):
         """Enemies typically don't have hero info from Overwolf."""
-        e = scenario.players["ENEMY2"]
+        e = scenario.players["ENEMY2#7777"]
         assert len(e.hero_swaps) == 0
         assert e.current_hero is None
 
     def test_enemy_with_updated_stats(self, scenario):
         """Enemy1 got a stats update at t=250s."""
-        e = scenario.players["ENEMY1"]
+        e = scenario.players["ENEMY1#6666"]
         assert e.stats.kills == 10
         assert e.stats.damage == 8000
 

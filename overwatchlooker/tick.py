@@ -456,9 +456,11 @@ class ControlScoreSystem:
     _DEATH_PRE = 5.0
     _DEATH_POST = 15.0
 
-    def __init__(self, app: Any, on_score_change: Callable[[list[tuple[int, int]]], None] | None = None):
+    def __init__(self, app: Any, on_score_change: Callable[[list[tuple[int, int]]], None] | None = None,
+                 debug: bool = False):
         self._app = app
         self._on_score_change = on_score_change
+        self._debug = debug
         self._active = False
         self._max_score = 2
         self._blue_x: list[float] = []
@@ -506,7 +508,7 @@ class ControlScoreSystem:
                 return False
         return True
 
-    def _is_filled(self, fx: float, color: str) -> bool:
+    def _is_filled(self, fx: float, color: str, debug: bool = False) -> bool:
         """Check if an indicator at screen fraction (fx, fy) is filled.
 
         Samples a small patch at each Y position across all buffered frames.
@@ -529,6 +531,9 @@ class ControlScoreSystem:
             stack = np.stack(patches, axis=0).astype(float)
             std = float(np.mean(np.std(stack, axis=0)))
             if std > self._MAX_STD:
+                if debug:
+                    _logger.info(f"  {color} @ ({fx:.3f},{fy:.4f}) px=({cx},{cy}): "
+                                 f"std={std:.1f} > {self._MAX_STD} SKIP")
                 continue
 
             # Color check on middle frame
@@ -539,6 +544,10 @@ class ControlScoreSystem:
             s = float(np.mean(patch[:, :, 1]))
             v = float(np.mean(patch[:, :, 2]))
             hue = float(np.mean(patch[:, :, 0]))
+
+            if debug:
+                _logger.info(f"  {color} @ ({fx:.3f},{fy:.4f}) px=({cx},{cy}): "
+                             f"std={std:.1f} hue={hue:.0f} s={s:.0f} v={v:.0f}")
 
             if color == "blue" and s > 170 and v > 150 and 80 < hue < 120:
                 return True
@@ -564,18 +573,25 @@ class ControlScoreSystem:
         if len(self._frame_buffer) < self._BUFFER_SIZE:
             return
 
+        debug = self._debug
+        if debug:
+            _logger.info(f"ControlScore tick={ctx.tick} t={ctx.sim_time:.1f}s:")
         blue_score = min(
-            sum(1 for fx in self._blue_x if self._is_filled(fx, "blue")),
+            sum(1 for fx in self._blue_x if self._is_filled(fx, "blue", debug)),
             self._max_score)
         red_score = min(
-            sum(1 for fx in self._red_x if self._is_filled(fx, "red")),
+            sum(1 for fx in self._red_x if self._is_filled(fx, "red", debug)),
             self._max_score)
 
         # Only accept if this reading is valid (not in death window)
         if not self._is_valid_time(ctx.sim_time):
+            if debug:
+                _logger.info(f"  => {blue_score}-{red_score} INVALID (death window)")
             return
 
         score = (blue_score, red_score)
+        if debug:
+            _logger.info(f"  => {blue_score}-{red_score} (last={self._last_confirmed})")
         if score != self._last_confirmed:
             # Score can only go up, never down
             if (score[0] >= self._last_confirmed[0]

@@ -508,6 +508,36 @@ class TestRecordingIO:
         assert events[1][0] == 50
 
 
+class TestPingPong:
+    def test_ping_not_parsed_as_event(self):
+        """Ping messages should not produce any parsed events."""
+        events = _parse_message({"type": "ping"})
+        assert len(events) == 0
+
+    def test_ping_pong_over_websocket(self):
+        """Receiver replies with pong when it gets a ping."""
+        import asyncio
+        from overwatchlooker.overwolf import OverwolfReceiver
+
+        async def _run():
+            receiver = OverwolfReceiver(port=0)
+            # Start server inline so we can grab the port
+            import websockets
+            server = await websockets.serve(
+                receiver._handler, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            try:
+                async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                    await ws.send(json.dumps({"type": "ping"}))
+                    reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+                    assert reply == {"type": "pong"}
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        asyncio.run(_run())
+
+
 class TestMapCodes:
     def test_runasapi(self):
         from overwatchlooker.overwolf import MAP_CODES

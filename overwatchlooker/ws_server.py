@@ -10,8 +10,24 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 import websockets
 from websockets.asyncio.server import Server, ServerConnection
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """Handle numpy scalars that sneak into event dicts."""
+
+    def default(self, o: Any) -> Any:
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.bool_):
+            return bool(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return super().default(o)
 
 _logger = logging.getLogger("overwatchlooker")
 
@@ -170,7 +186,7 @@ class WsServer:
         try:
             # Send current state snapshot on connect
             state = self._bus.get_state()
-            await ws.send(json.dumps(state))
+            await ws.send(json.dumps(state, cls=_NumpyEncoder))
             # Process incoming commands
             async for raw in ws:
                 try:
@@ -187,7 +203,7 @@ class WsServer:
                 # Run handler in a thread to avoid blocking the async loop
                 response = await asyncio.get_event_loop().run_in_executor(
                     None, self._bus.handle_command, cmd)
-                await ws.send(json.dumps(response))
+                await ws.send(json.dumps(response, cls=_NumpyEncoder))
         finally:
             self._clients.discard(ws)
             _logger.info(f"Companion disconnected ({len(self._clients)} clients)")
@@ -196,7 +212,7 @@ class WsServer:
         if not self._clients:
             return
         # Serialize once
-        data = json.dumps(event)
+        data = json.dumps(event, cls=_NumpyEncoder)
         dead: list[ServerConnection] = []
         for ws in self._clients:
             try:

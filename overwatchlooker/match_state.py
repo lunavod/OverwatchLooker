@@ -159,19 +159,32 @@ class MatchState:
     hero_tabs: dict[str, HeroTabCapture] = field(default_factory=dict)  # hero_name -> capture
     latest_tab: TabScreenshot | None = None  # most recent tab screenshot (for rank detection)
 
-    # Players keyed by UPPERCASE player_name
+    # Players keyed by UPPERCASE battletag (e.g. "PLAYER#1234")
     players: dict[str, PlayerState] = field(default_factory=dict)
 
     # Internal tracking
     _local_team: int | None = None  # raw team id of local player
     _analysis_triggered: bool = False  # prevent double trigger
 
-    def get_or_create_player(self, name: str) -> PlayerState:
-        """Get existing player or create a new one. Key is UPPERCASE name."""
-        key = name.upper()
+    def get_or_create_player(self, battletag: str) -> PlayerState:
+        """Get existing player or create a new one. Key is UPPERCASE battletag."""
+        key = battletag.upper()
         if key not in self.players:
             self.players[key] = PlayerState(player_name=key)
         return self.players[key]
+
+    def find_player_by_name(self, display_name: str) -> PlayerState | None:
+        """Find an existing player by display name (ignoring the #1234 suffix).
+
+        Returns None if no match is found.
+        """
+        target = display_name.upper()
+        for key, player in self.players.items():
+            # Strip #digits suffix to get the display name portion
+            name_part = key.rsplit("#", 1)[0] if "#" in key else key
+            if name_part == target:
+                return player
+        return None
 
     @property
     def local_player(self) -> PlayerState | None:
@@ -499,13 +512,13 @@ def build_mcp_payload(match: MatchState) -> dict:
             owners.sort(key=lambda o: (
                 o.hero_swaps[0].detected_at if o.hero_swaps else 0))
             for old in owners[:-1]:
-                disconnected.add(old.player_name)
+                disconnected.add(old.battletag)
                 _logger.info(f"MCP payload: skipping disconnected player "
-                             f"{old.player_name} (slot {slot} taken by "
-                             f"{owners[-1].player_name})")
+                             f"{old.battletag} (slot {slot} taken by "
+                             f"{owners[-1].battletag})")
 
     for p in match.players.values():
-        if p.player_name in disconnected:
+        if p.battletag in disconnected:
             continue
 
         team = p.team_side.value if p.team_side else "ALLY"

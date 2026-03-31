@@ -152,7 +152,7 @@ The app can record gameplay sessions for later replay and analysis.
 
 **Manual recording:** Toggle via the tray menu. Uses memoir-capture's native NVENC H.265 encoder at 10 FPS, downscaled to 1080p. Per-frame keyboard state is stored as bitmasks in a `.meta` file. Overwolf GEP events (if `--overwolf` is active) are stored as JSONL in a `.overwolf.jsonl` file. Produces `recording.mp4` + `recording.meta` (+ `recording.overwolf.jsonl`) in timestamped directories under `recordings/`.
 
-**Auto-recording:** With `--auto-recording`, recording starts automatically on match start and stops after a configurable tail period (default 60s, set via `--auto-recording-tail`). Saved to `recordings_auto/`. A `match_info.json` file is written at match end with map, mode, result, team side, score progression, duration, and start time.
+**Auto-recording:** With `--auto-recording`, recording starts automatically on match start and stops after a configurable tail period (default 60s, set via `--auto-recording-tail`). Saved to `recordings_auto/`. A `match_info.json` file is written at match end with map, mode, result, team side, score progression, duration, and start time. Completed recordings are automatically uploaded in the background via tus resumable upload (requires `TUSD_UPLOAD_URL` and `TUSD_AUTH_KEY` in `.env`).
 
 **Replay:** Use `--replay <dir>` or `--replay <file.mp4>` to replay a recording at max speed. The full detection and analysis pipeline runs as if it were live, making this useful for testing changes without playing a match.
 
@@ -167,6 +167,8 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
 | `WS_PORT` | `42685` | WebSocket server port for companion apps |
 | `OVERWOLF_PORT` | `28025` | Overwolf GEP receiver port (OverwatchListener connects here) |
+| `TUSD_UPLOAD_URL` | -- | tus upload endpoint for recording uploads |
+| `TUSD_AUTH_KEY` | -- | Bearer token for tus upload authentication |
 
 ## Project structure
 
@@ -190,6 +192,7 @@ overwatchlooker/
   mcp_client.py                  # MCP server client (Streamable HTTP)
   ws_server.py                   # WebSocket server for companion apps
   overwolf.py                    # Overwolf GEP receiver (typed events, queue, recording)
+  recording_uploader.py          # Background tus resumable upload of recordings
   models/                        # Finetuned PaddleOCR inference models (Git LFS)
     panel_labels/                # Stat label OCR (Config Medium, A-Z + space)
     panel_values/                # Stat value OCR (Futura, 0-9 + % + , + . + :)
