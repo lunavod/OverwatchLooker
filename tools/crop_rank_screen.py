@@ -1,6 +1,7 @@
 """Crop regions of interest from the post-match rank screen and OCR them.
 
 Also binarizes and crops to text bounds for OCR-ready output.
+All pixel coordinates are defined at 1920x1080 and scaled to actual resolution.
 """
 
 import sys
@@ -10,8 +11,10 @@ import cv2
 import numpy as np
 from paddlex import create_model
 
-# Regions are defined as (x1, y1, x2, y2) in pixels for 1920x1080 frames.
+# Reference resolution — all region coordinates are defined at this size.
+_REF_W, _REF_H = 1920, 1080
 
+# Regions defined as (x1, y1, x2, y2) in pixels at 1920x1080.
 REGIONS = {
     # "GOLD 3" text below the rank emblem
     "rank_division": (720, 670, 1200, 730),
@@ -57,6 +60,12 @@ _CHEVRON_LEFT = _make_chevron_contour("left")
 _CHEVRON_MATCH_THRESH = 0.5
 
 
+def _scale_region(name: str, sx: float, sy: float) -> tuple[int, int, int, int]:
+    """Scale a reference region from 1080p to the actual resolution."""
+    x1, y1, x2, y2 = REGIONS[name]
+    return int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)
+
+
 def binarize_bbox(gray: np.ndarray, threshold: int = _TEXT_THRESH,
                   pad_frac: float = 0.3, min_pad: int = 10) -> np.ndarray:
     """Binarize, crop to text bbox, pad with black. Returns BGR for model."""
@@ -98,17 +107,17 @@ def isolate_colored_text(crop_bgr: np.ndarray,
     return cv2.cvtColor(padded, cv2.COLOR_GRAY2BGR)
 
 
-def _is_chevron(contour: np.ndarray) -> bool:
+def _is_chevron(contour: np.ndarray, scale: float = 1.0) -> bool:
     """Detect if an upscaled contour is a chevron (> or <) by geometric shape.
 
     Chevrons have: h/w >= 1.4, simplify to 3-5 polygon vertices,
     top/bottom at similar x, tip offset horizontally near vertical center.
     """
     area = cv2.contourArea(contour)
-    if area < 800:  # too small at 4x — % dots, noise
+    if area < 800 * scale ** 2:  # too small at 4x — % dots, noise
         return False
     x, y, w, h = cv2.boundingRect(contour)
-    if w < 8 or h < 8:
+    if w < 8 * scale or h < 8 * scale:
         return False
     if h < w * 1.4:
         return False
@@ -139,16 +148,16 @@ def _is_chevron(contour: np.ndarray) -> bool:
     return False
 
 
-def _remove_chevrons(mask: np.ndarray) -> np.ndarray:
+def _remove_chevrons(mask: np.ndarray, scale: float = 1.0) -> np.ndarray:
     """Remove chevron shapes from a binary mask using upscaled contour analysis."""
     upscaled = cv2.resize(mask, None, fx=_CHEVRON_UPSCALE, fy=_CHEVRON_UPSCALE,
                           interpolation=cv2.INTER_NEAREST)
     contours, _ = cv2.findContours(upscaled, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     for c in contours:
-        if cv2.contourArea(c) < 20:
+        if cv2.contourArea(c) < 20 * scale ** 2:
             continue
-        if _is_chevron(c):
+        if _is_chevron(c, scale):
             cv2.drawContours(upscaled, [c], -1, 0, cv2.FILLED)
 
     return cv2.resize(upscaled, (mask.shape[1], mask.shape[0]),
@@ -170,7 +179,9 @@ def ocr_rank_progress(img: np.ndarray, model) -> tuple[str, float, str]:
 
     Returns (text, score, sign) where sign is '+' or '-'.
     """
-    x1, y1, x2, y2 = REGIONS["rank_progress"]
+    h, w = img.shape[:2]
+    sx, sy = w / _REF_W, h / _REF_H
+    x1, y1, x2, y2 = _scale_region("rank_progress", sx, sy)
     crop = img[y1:y2, x1:x2]
     sign = detect_progress_sign(crop)
     ocr_img = isolate_colored_text(crop)
@@ -179,6 +190,7 @@ def ocr_rank_progress(img: np.ndarray, model) -> tuple[str, float, str]:
 
 
 def extract_progress_bar_delta(crop_bgr: np.ndarray,
+                               scale: float = 1.0,
                                pad_frac: float = 0.3, min_pad: int = 10
                                ) -> tuple[np.ndarray | None, str | None]:
     """Extract white text inside the green/red delta segment of the progress bar.
@@ -199,7 +211,8 @@ def extract_progress_bar_delta(crop_bgr: np.ndarray,
     green_count = int(np.sum(green_mask))
     red_count = int(np.sum(red_mask))
 
-    if green_count < 50 and red_count < 50:
+    pixel_thresh = int(50 * scale ** 2)
+    if green_count < pixel_thresh and red_count < pixel_thresh:
         return None, None  # demotion protection
 
     sign = "+" if green_count > red_count else "-"
@@ -212,7 +225,10 @@ def extract_progress_bar_delta(crop_bgr: np.ndarray,
 
     # Clean the color mask: remove thin connections from anti-aliasing
     color_mask_u8 = color_mask.astype(np.uint8) * 255
-    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    ks = max(3, int(round(3 * scale)))
+    if ks % 2 == 0:
+        ks += 1
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (ks, ks))
     color_mask_u8 = cv2.morphologyEx(color_mask_u8, cv2.MORPH_OPEN, open_kernel)
     contours, _ = cv2.findContours(color_mask_u8, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
@@ -232,7 +248,7 @@ def extract_progress_bar_delta(crop_bgr: np.ndarray,
     text_only = cv2.bitwise_and(white_mask, cv2.bitwise_and(filled_mask, not_colored))
 
     # Remove chevron shapes
-    text_only = _remove_chevrons(text_only)
+    text_only = _remove_chevrons(text_only, scale)
 
     # Strip the +/- sign (leftmost contour) — sign comes from color,
     # and unknown chars in the values model corrupt the CTC decoder
@@ -243,7 +259,7 @@ def extract_progress_bar_delta(crop_bgr: np.ndarray,
         first = cv2.boundingRect(by_x[0])
         second = cv2.boundingRect(by_x[1])
         # Only strip if there's a gap (sign is separate from digits)
-        if second[0] - (first[0] + first[2]) >= 1:
+        if second[0] - (first[0] + first[2]) >= max(1, int(scale)):
             cv2.drawContours(text_only, [by_x[0]], -1, 0, cv2.FILLED)
 
     ys, xs = np.where(text_only > 0)
@@ -269,9 +285,12 @@ def ocr_progress_bar(img: np.ndarray, model) -> tuple[str | None, float, str | N
     Returns (text, score, sign) or (None, 0, None) for demotion protection.
     Sign is detected from bar color (green=+, red=-).
     """
-    x1, y1, x2, y2 = REGIONS["progress_bar"]
+    h, w = img.shape[:2]
+    sx, sy = w / _REF_W, h / _REF_H
+    scale = (sx + sy) / 2
+    x1, y1, x2, y2 = _scale_region("progress_bar", sx, sy)
     crop = img[y1:y2, x1:x2]
-    ocr_img, color_sign = extract_progress_bar_delta(crop)
+    ocr_img, color_sign = extract_progress_bar_delta(crop, scale)
     if ocr_img is None and color_sign is None:
         return None, 0.0, None
     if ocr_img is None:
@@ -292,7 +311,9 @@ def ocr_modifiers(img: np.ndarray, model) -> list[tuple[str, float]]:
 
     Returns list of (text, score) tuples, one per modifier.
     """
-    x1, y1, x2, y2 = REGIONS["modifiers"]
+    fh, fw = img.shape[:2]
+    sx, sy = fw / _REF_W, fh / _REF_H
+    x1, y1, x2, y2 = _scale_region("modifiers", sx, sy)
     crop = img[y1:y2, x1:x2]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
 
@@ -324,13 +345,13 @@ def ocr_modifiers(img: np.ndarray, model) -> list[tuple[str, float]]:
         groups[-1].append(r)
 
     # OCR each group
+    pad = max(5, int(5 * sx))
     results = []
     for group in groups:
         gx1 = min(r[0] for r in group)
         gy1 = min(r[1] for r in group)
         gx2 = max(r[0] + r[2] for r in group)
         gy2 = max(r[1] + r[3] for r in group)
-        pad = 5
         cy1 = max(0, gy1 - pad)
         cy2 = min(text_mask.shape[0], gy2 + pad)
         cx1 = max(0, gx1 - pad)
@@ -347,7 +368,9 @@ def ocr_modifiers(img: np.ndarray, model) -> list[tuple[str, float]]:
 
 def ocr_rank_division(img: np.ndarray, model) -> tuple[str, float]:
     """Extract rank + division text from a full frame. Returns (text, score)."""
-    x1, y1, x2, y2 = REGIONS["rank_division"]
+    h, w = img.shape[:2]
+    sx, sy = w / _REF_W, h / _REF_H
+    x1, y1, x2, y2 = _scale_region("rank_division", sx, sy)
     crop = img[y1:y2, x1:x2]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     ocr_img = binarize_bbox(gray)
@@ -367,20 +390,24 @@ def main():
 
     img = cv2.imread(str(frame_path))
     h, w = img.shape[:2]
-    print(f"Frame: {w}x{h}")
+    sx, sy = w / _REF_W, h / _REF_H
+    scale = (sx + sy) / 2
+    print(f"Frame: {w}x{h} (scale: {sx:.2f}x)")
 
     out_dir = frame_path.parent / "debug_rank_crops"
     out_dir.mkdir(exist_ok=True)
 
-    for name, (x1, y1, x2, y2) in REGIONS.items():
+    for name, (rx1, ry1, rx2, ry2) in REGIONS.items():
+        x1, y1 = int(rx1 * sx), int(ry1 * sy)
+        x2, y2 = int(rx2 * sx), int(ry2 * sy)
         crop = img[y1:y2, x1:x2]
         out_path = out_dir / f"{name}.png"
         cv2.imwrite(str(out_path), crop)
         print(f"  {name}: ({x1},{y1})-({x2},{y2}) -> {out_path}")
 
     # Binarize + crop to text for rank_division
-    rd = REGIONS["rank_division"]
-    crop = img[rd[1]:rd[3], rd[0]:rd[2]]
+    x1, y1, x2, y2 = _scale_region("rank_division", sx, sy)
+    crop = img[y1:y2, x1:x2]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     ocr_ready = binarize_bbox(gray)
     ocr_path = out_dir / "rank_division_ocr.png"
@@ -388,8 +415,8 @@ def main():
     print(f"  rank_division_ocr -> {ocr_path} ({ocr_ready.shape[1]}x{ocr_ready.shape[0]})")
 
     # Isolate colored text for rank_progress
-    rp = REGIONS["rank_progress"]
-    rp_crop = img[rp[1]:rp[3], rp[0]:rp[2]]
+    x1, y1, x2, y2 = _scale_region("rank_progress", sx, sy)
+    rp_crop = img[y1:y2, x1:x2]
     rp_ocr = isolate_colored_text(rp_crop)
     rp_ocr_path = out_dir / "rank_progress_ocr.png"
     cv2.imwrite(str(rp_ocr_path), rp_ocr)
@@ -410,9 +437,9 @@ def main():
     print(f"  Progress: {sign}{text} ({score:.4f})")
 
     # Progress bar delta
-    pb = REGIONS["progress_bar"]
-    pb_crop = img[pb[1]:pb[3], pb[0]:pb[2]]
-    pb_ocr, pb_sign = extract_progress_bar_delta(pb_crop)
+    x1, y1, x2, y2 = _scale_region("progress_bar", sx, sy)
+    pb_crop = img[y1:y2, x1:x2]
+    pb_ocr, pb_sign = extract_progress_bar_delta(pb_crop, scale)
     if pb_ocr is not None:
         pb_ocr_path = out_dir / "progress_bar_ocr.png"
         cv2.imwrite(str(pb_ocr_path), pb_ocr)
@@ -438,7 +465,9 @@ def main():
     # Also save annotated full frame with rectangles
     annotated = img.copy()
     colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (0, 255, 255)]
-    for i, (name, (x1, y1, x2, y2)) in enumerate(REGIONS.items()):
+    for i, (name, (rx1, ry1, rx2, ry2)) in enumerate(REGIONS.items()):
+        x1, y1 = int(rx1 * sx), int(ry1 * sy)
+        x2, y2 = int(rx2 * sx), int(ry2 * sy)
         color = colors[i % len(colors)]
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
         cv2.putText(annotated, name, (x1, y1 - 5),

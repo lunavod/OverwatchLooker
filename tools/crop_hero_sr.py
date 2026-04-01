@@ -17,7 +17,10 @@ from paddlex import create_model
 _HEROES_DIR = Path(__file__).parent.parent / "overwatchlooker" / "assets" / "heroes"
 _VALUES_MODEL_DIR = Path(__file__).parent.parent / "overwatchlooker" / "models" / "panel_values"
 
-# Search region for hero portraits (right side of screen)
+# Reference resolution — all pixel constants are defined at this size.
+_REF_W, _REF_H = 1920, 1080
+
+# Search region for hero portraits (right side of screen) — 1080p reference
 _SEARCH_X1 = 1750
 _SEARCH_Y1 = 350
 _SEARCH_X2 = 1920
@@ -25,7 +28,7 @@ _SEARCH_Y2 = 650
 
 # Portrait matching settings
 _MATCH_THRESHOLD = 0.8
-_SCALES = [0.25, 0.28, 0.31, 0.34, 0.37, 0.40]
+_SCALES = [0.25, 0.28, 0.31, 0.34, 0.37, 0.40]  # at 1080p
 
 
 def load_portrait_templates() -> dict[str, np.ndarray]:
@@ -49,8 +52,20 @@ def find_hero_cards(img: np.ndarray,
 
     Returns list of (hero_name, x, y, w, h, score) sorted by y position.
     """
-    roi = img[_SEARCH_Y1:_SEARCH_Y2, _SEARCH_X1:_SEARCH_X2]
+    h_img, w_img = img.shape[:2]
+    sx, sy = w_img / _REF_W, h_img / _REF_H
+    scale = (sx + sy) / 2
+
+    search_x1 = int(_SEARCH_X1 * sx)
+    search_y1 = int(_SEARCH_Y1 * sy)
+    search_x2 = int(_SEARCH_X2 * sx)
+    search_y2 = int(_SEARCH_Y2 * sy)
+
+    roi = img[search_y1:search_y2, search_x1:search_x2]
     rh, rw = roi.shape[:2]
+
+    # Scale template match sizes for resolution
+    scales = [s * scale for s in _SCALES]
 
     matches = []
     for hero, tmpl in templates.items():
@@ -58,8 +73,8 @@ def find_hero_cards(img: np.ndarray,
         best_val = -1.0
         best_loc = (0, 0)
         best_size = (0, 0)
-        for scale in _SCALES:
-            sw, sh = int(tw * scale), int(th * scale)
+        for s in scales:
+            sw, sh = int(tw * s), int(th * s)
             if sw > rw or sh > rh or sw < 10 or sh < 10:
                 continue
             resized = cv2.resize(tmpl, (sw, sh))
@@ -72,16 +87,17 @@ def find_hero_cards(img: np.ndarray,
         if best_val >= _MATCH_THRESHOLD:
             mx, my = best_loc
             sw, sh = best_size
-            matches.append((hero, _SEARCH_X1 + mx, _SEARCH_Y1 + my,
+            matches.append((hero, search_x1 + mx, search_y1 + my,
                             sw, sh, best_val))
 
     # Remove overlapping matches (keep best score per y-region)
     matches.sort(key=lambda m: m[5], reverse=True)
+    overlap_thresh = int(50 * sy)
     filtered = []
     for m in matches:
         overlap = False
         for f in filtered:
-            if abs(m[2] - f[2]) < 50:
+            if abs(m[2] - f[2]) < overlap_thresh:
                 overlap = True
                 break
         if not overlap:
@@ -155,7 +171,9 @@ def main():
 
     img = cv2.imread(str(frame_path))
     h, w = img.shape[:2]
-    print(f"Frame: {w}x{h}")
+    sx, sy = w / _REF_W, h / _REF_H
+    scale = (sx + sy) / 2
+    print(f"Frame: {w}x{h} (scale: {sx:.2f}x)")
 
     out_dir = frame_path.parent / "debug_hero_sr"
     out_dir.mkdir(exist_ok=True)
@@ -173,32 +191,34 @@ def main():
     out_dir = frame_path.parent / "debug_hero_sr"
     out_dir.mkdir(exist_ok=True)
 
-    for hero, x, y, w, h, score in cards:
-        print(f"  {hero}: ({x},{y}) {w}x{h} score={score:.4f}")
+    for hero, px, py, pw, ph, score in cards:
+        print(f"  {hero}: ({px},{py}) {pw}x{ph} score={score:.4f}")
 
         # Draw portrait match box
-        cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.rectangle(annotated, (px, py), (px + pw, py + ph), (0, 255, 0), 2)
 
         # Find left edge of portrait border by scanning for cyan line
         # Portrait border cyan ~rgb(18, 206, 251) = BGR(251, 206, 18)
         cyan_bgr = np.array([251, 206, 18], dtype=float)
-        full_size = int(w / 0.4)
-        cy = y + h // 2
-        card_y1 = cy - full_size // 2 - 5
-        card_y2 = cy + full_size // 2 + 25
+        full_size = int(pw / 0.4)
+        cy = py + ph // 2
+        card_y1 = cy - full_size // 2 - int(5 * sy)
+        card_y2 = cy + full_size // 2 + int(25 * sy)
 
         # Scan leftward from portrait match to find the cyan border
-        scan_row = img[cy - 5:cy + 5, x - 120:x + w]
+        scan_range = int(120 * sx)
+        scan_half = int(5 * sy)
+        scan_row = img[cy - scan_half:cy + scan_half, px - scan_range:px + pw]
         scan_f = scan_row.astype(float)
         cyan_dist = np.sqrt(np.sum((scan_f - cyan_bgr) ** 2, axis=2))
         cyan_cols = np.where(np.min(cyan_dist, axis=0) < 50)[0]
         if len(cyan_cols) > 0:
             # Leftmost cyan column relative to the scan start
-            border_left = (x - 120) + int(cyan_cols[0])
-            card_x2 = border_left - 5
+            border_left = (px - scan_range) + int(cyan_cols[0])
+            card_x2 = border_left - int(5 * sx)
         else:
-            card_x2 = x - 30
-        card_x1 = card_x2 - 130
+            card_x2 = px - int(30 * sx)
+        card_x1 = card_x2 - int(130 * sx)
 
         # Detect calibration squares: 5 similar small contours in a vertical column
         content_region = img[max(0, card_y1):card_y2, max(0, card_x1):card_x2]
@@ -209,16 +229,22 @@ def main():
         cnts, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         # Find groups of ~5 contours with similar size in a vertical column
+        sq_min = int(4 * scale)
+        sq_max = int(25 * scale)
+        sq_diff = int(8 * scale)
         rects = [cv2.boundingRect(c) for c in cnts]
         rects = [(x2, y2, w2, h2) for x2, y2, w2, h2 in rects
-                 if 4 < w2 < 25 and 4 < h2 < 25 and abs(w2 - h2) < 8]
+                 if sq_min < w2 < sq_max and sq_min < h2 < sq_max
+                 and abs(w2 - h2) < sq_diff]
 
-        # Group by similar x position (within 5px)
+        # Group by similar x position
+        col_thresh = int(8 * sx)
+        size_var = int(6 * scale)
         if rects:
             rects.sort(key=lambda r: r[0])
             columns: list[list[tuple]] = [[rects[0]]]
             for r in rects[1:]:
-                if abs(r[0] - columns[-1][0][0]) < 8:
+                if abs(r[0] - columns[-1][0][0]) < col_thresh:
                     columns[-1].append(r)
                 else:
                     columns.append([r])
@@ -229,9 +255,10 @@ def main():
                     continue
                 widths = [r[2] for r in col]
                 heights = [r[3] for r in col]
-                if max(widths) - min(widths) < 6 and max(heights) - min(heights) < 6:
+                if (max(widths) - min(widths) < size_var
+                        and max(heights) - min(heights) < size_var):
                     # Found calibration squares — cut content to the left of them
-                    sq_x = min(r[0] for r in col) - 3
+                    sq_x = min(r[0] for r in col) - int(3 * sx)
                     card_x2 = card_x1 + sq_x
                     break
 
@@ -246,7 +273,8 @@ def main():
         red_delta = (r > 100) & (r > g * 2) & (r > b * 1.5)
         # Green delta: G channel dominant (G > 100, G > R*2, G > B*2)
         green_delta = (g > 100) & (g > r * 2) & (g > b * 2)
-        delta_rows = np.sum(red_delta | green_delta, axis=1) > 3
+        delta_pixel_thresh = max(3, int(3 * sx))
+        delta_rows = np.sum(red_delta | green_delta, axis=1) > delta_pixel_thresh
 
         text_rows = (row_max > 100) | delta_rows
         # Find transitions to split into lines
@@ -292,7 +320,8 @@ def main():
                 # Upscale 3x before binarizing for better small-text OCR
                 upscaled = cv2.resize(line_crop, None, fx=3, fy=3,
                                       interpolation=cv2.INTER_CUBIC)
-                ocr_img, delta_sign = binarize_delta(upscaled, min_h=20)
+                ocr_img, delta_sign = binarize_delta(upscaled,
+                                                     min_h=int(20 * scale))
                 if ocr_img is not None:
                     result = list(values_model.predict(ocr_img))
                     sr_delta = result[0]["rec_text"]

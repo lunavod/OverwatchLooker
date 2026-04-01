@@ -18,6 +18,7 @@ from paddlex import create_model
 
 from crop_rank_screen import (
     REGIONS,
+    _REF_W, _REF_H,
     _RANK_MODEL_DIR,
     _VALUES_MODEL_DIR,
     _MODIFIERS_MODEL_DIR,
@@ -45,9 +46,17 @@ def find_delta_frame(cap: cv2.VideoCapture, fps: float, window_sec: float,
     Returns (frame, frame_index, delta_text, delta_sign, score) or
     (None, -1, None, None, 0) if not found.
     """
-    pb_x1, pb_y1, pb_x2, pb_y2 = REGIONS["progress_bar"]
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    sx, sy = frame_w / _REF_W, frame_h / _REF_H
+
+    pb = REGIONS["progress_bar"]
+    pb_x1, pb_y1 = int(pb[0] * sx), int(pb[1] * sy)
+    pb_x2, pb_y2 = int(pb[2] * sx), int(pb[3] * sy)
+
     max_frames = int(window_sec * fps)
     tolerance = _COLOR_TOLERANCE
+    pixel_threshold = int(200 * sx * sy)
 
     # Collect frames with significant delta pixels
     candidates: list[tuple[int, np.ndarray]] = []
@@ -62,7 +71,7 @@ def find_delta_frame(cap: cv2.VideoCapture, fps: float, window_sec: float,
             (np.sqrt(np.sum((img_f - _GREEN_BGR_1) ** 2, axis=2)) < tolerance) |
             (np.sqrt(np.sum((img_f - _GREEN_BGR_2) ** 2, axis=2)) < tolerance)))
         rc = int(np.sum(np.sqrt(np.sum((img_f - _RED_BGR) ** 2, axis=2)) < tolerance))
-        if gc + rc > 200:
+        if gc + rc > pixel_threshold:
             candidates.append((i, frame.copy()))
 
     if not candidates:
@@ -95,8 +104,11 @@ def main():
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 10
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     duration = total_frames / fps
-    print(f"Video: {video_path.name} ({duration:.1f}s, {fps:.0f} FPS, {total_frames} frames)")
+    print(f"Video: {video_path.name} ({duration:.1f}s, {fps:.0f} FPS, "
+          f"{total_frames} frames, {frame_w}x{frame_h})")
 
     # Load models
     print("Loading models...")
