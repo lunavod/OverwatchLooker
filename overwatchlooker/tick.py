@@ -721,6 +721,7 @@ class TickLoop:
         self.running = True
         self._current_tick = 0
         self.max_ticks: int | None = None  # stop after this many ticks
+        self.start_tick: int = 0  # skip ticks before this (replay seek)
 
     def register(self, on_tick, every_n_ticks: int = 1) -> None:
         self._systems.append((every_n_ticks, on_tick))
@@ -748,6 +749,18 @@ class TickLoop:
             self._threads.append(t)
 
         tick = 0
+
+        # Seek past skipped frames for replay start offset
+        if self.start_tick > 0 and isinstance(self.frame_source, ReplayFrameSource):
+            self.frame_source._reader.seek(self.start_tick)
+            tick = self.start_tick
+            self.input_source.advance_to(tick)
+            # Flush pre-tick hooks so Overwolf events before start are processed
+            for hook in self._pre_tick_hooks:
+                hook(tick)
+            _logger.info(f"Replay: seeked to tick {tick} "
+                         f"({tick / self.fps:.1f}s)")
+
         try:
             while self.running:
                 frame = self.frame_source.next_frame()

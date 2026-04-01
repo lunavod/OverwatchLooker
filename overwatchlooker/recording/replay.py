@@ -38,6 +38,11 @@ class FrameReader:
         self._read += 1
         return frame
 
+    def seek(self, frame_index: int) -> None:
+        """Seek to a specific frame index."""
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        self._read = frame_index
+
     def close(self) -> None:
         self._cap.release()
 

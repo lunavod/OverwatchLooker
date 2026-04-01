@@ -27,6 +27,13 @@ def main():
         help="Only replay the first N seconds of the recording",
     )
     parser.add_argument(
+        "--replay-start",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help="Start replay from N seconds into the recording",
+    )
+    parser.add_argument(
         "--ws",
         action="store_true",
         help="Start WebSocket server for companion app",
@@ -108,8 +115,11 @@ def main():
                   auto_recording_tail=args.auto_recording_tail)
         app._start_listening()
 
+        if args.replay_start and app._tick_loop:
+            app._tick_loop.start_tick = int(args.replay_start * replay.fps)
         if args.replay_duration and app._tick_loop:
-            app._tick_loop.max_ticks = int(args.replay_duration * replay.fps)
+            start = app._tick_loop.start_tick
+            app._tick_loop.max_ticks = start + int(args.replay_duration * replay.fps)
 
         try:
             app._tick_loop.run()  # blocks until replay exhausted

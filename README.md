@@ -66,7 +66,8 @@ Replays a previously recorded session at max speed, running the full detection p
 | `--ws` | Start WebSocket server for companion apps (see [protocol docs](docs/websocket-protocol.md)) |
 | `--transcript` | Log subtitle OCR results to `transcripts/` folder |
 | `--replay` | Replay a recording directory or `.mp4` file |
-| `--replay-duration N` | Only replay the first N seconds of the recording |
+| `--replay-start N` | Start replay from N seconds into the recording |
+| `--replay-duration N` | Only replay N seconds of the recording (from start point) |
 | `--auto-recording` | Automatically record matches (starts on match start, stops after match end) |
 | `--auto-recording-tail N` | Seconds to keep recording after match ends (default: 60) |
 
