@@ -98,10 +98,15 @@ Train a PaddleOCR recognition model for Big Noodle Oblique:
 4. Modifier OCR + fuzzy matching against known list
 5. Return structured result: `{rank, division, progress_pct, delta_pct, demotion_protection, modifiers}`
 
-### Phase 4 — Integration
+### Phase 4 — Integration (done)
 
-Wire into the main app:
+Wired into the main app via `RankScreenSystem` (`overwatchlooker/rank_screen.py`):
 
-- Detect when the rank screen is visible (after `match_ended` Overwolf event)
-- Run extraction on the frame
-- Include rank progression data in the match summary and MCP payload
+- Activates on `MatchEndEvent` when `game_type == RANKED`
+- Purely tick-based: collects frames for ~10s after match end, no wall-clock timing
+- Delta frame: scans first 100 ticks for green/red progress bar pixels, OCRs last 10 candidates
+- Main frame: captures at tick 100 for rank, progress, modifiers, demotion protection
+- OCR runs in a background thread; `_finalize_match_end()` waits for completion before snapshotting
+- Results stored in `MatchState.rank_progression` (`RankProgression` dataclass)
+- Included in match summary display and MCP payload
+- Works in replay mode — `TickLoop` flushes all Overwolf events up to `start_tick` on seek, so `game_type` is set even when replaying from mid-recording

@@ -123,6 +123,18 @@ class HeroTabCapture:
 
 
 @dataclass
+class RankProgression:
+    """Rank progression data extracted from the post-match rank screen."""
+    rank: str = ""              # "GOLD 3"
+    progress: str = ""          # "24%"
+    progress_sign: str = ""     # "+" or "-"
+    delta: str = ""             # "27%"
+    delta_sign: str = ""        # "+" or "-"
+    demotion_protection: bool = False
+    modifiers: list[str] = field(default_factory=list)
+
+
+@dataclass
 class MatchState:
     # Match-level (from Overwolf)
     map_name: str = ""
@@ -154,6 +166,9 @@ class MatchState:
 
     # Hero bans (from tab screenshot template matching)
     hero_bans: list[str] = field(default_factory=list)
+
+    # Rank progression (from rank screen OCR after match end)
+    rank_progression: RankProgression | None = None
 
     # From Tab capture — one per hero (latest with visible panel), plus latest raw for rank
     hero_tabs: dict[str, HeroTabCapture] = field(default_factory=dict)  # hero_name -> capture
@@ -286,6 +301,13 @@ class MatchState:
             "is_backfill": self.is_backfill,
             "control_score": [list(s) for s in self.control_score] if self.control_score else None,
             "hero_bans": self.hero_bans or None,
+            "rank_progression": ({
+                "rank": self.rank_progression.rank,
+                "progress": f"{self.rank_progression.progress_sign}{self.rank_progression.progress}",
+                "delta": f"{self.rank_progression.delta_sign}{self.rank_progression.delta}" if self.rank_progression.delta else None,
+                "demotion_protection": self.rank_progression.demotion_protection,
+                "modifiers": self.rank_progression.modifiers or None,
+            } if self.rank_progression else None),
             "local_team": self._local_team,
             "hero_tabs": {name: {"hero": c.hero_name, "tick": c.tick, "file": c.filename}
                          for name, c in self.hero_tabs.items()},
@@ -391,6 +413,18 @@ def format_match_state(match: MatchState) -> str:
     # Hero bans
     if match.hero_bans:
         lines.append(f"Bans: {', '.join(match.hero_bans)}")
+
+    # Rank progression
+    rp = match.rank_progression
+    if rp:
+        lines.append(f"Rank Screen: {rp.rank}")
+        lines.append(f"  Progress: {rp.progress_sign}{rp.progress}")
+        if rp.delta:
+            lines.append(f"  Delta: {rp.delta_sign}{rp.delta}")
+        if rp.demotion_protection:
+            lines.append("  Demotion: PROTECTION")
+        if rp.modifiers:
+            lines.append(f"  Modifiers: {', '.join(rp.modifiers)}")
 
     # Rounds
     if match.rounds:
@@ -622,5 +656,19 @@ def build_mcp_payload(match: MatchState) -> dict:
     # Hero bans
     if match.hero_bans:
         data["banned_heroes"] = match.hero_bans
+
+    # Rank progression
+    rp = match.rank_progression
+    if rp:
+        rp_data: dict = {"rank": rp.rank}
+        if rp.progress:
+            rp_data["progress"] = f"{rp.progress_sign}{rp.progress}"
+        if rp.delta:
+            rp_data["delta"] = f"{rp.delta_sign}{rp.delta}"
+        if rp.demotion_protection:
+            rp_data["demotion_protection"] = True
+        if rp.modifiers:
+            rp_data["modifiers"] = rp.modifiers
+        data["rank_progression"] = rp_data
 
     return data

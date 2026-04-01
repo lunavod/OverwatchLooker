@@ -109,6 +109,8 @@ class App:
         self._overwolf = overwolf_receiver
         self._overwolf_queue: OverwolfEventQueue | None = None
         self._overwolf_system: OverwolfSystem | None = None
+        from overwatchlooker.rank_screen import RankScreenSystem
+        self._rank_screen_system: RankScreenSystem | None = None
         self._icon: pystray.Icon | None = None
         self._cooldown_until_tick: int = 0  # ignore tab/crop events until this tick
         self._poll_thread: threading.Thread | None = None
@@ -225,6 +227,11 @@ class App:
         if isinstance(event, MatchEndEvent):
             _logger.info(f"MatchEnd: ts={event.timestamp}")
             ms.ended_at = event.timestamp
+            # Start rank screen analysis for ranked matches
+            if (ms.game_type == GameType.RANKED
+                    and self._rank_screen_system and self._tick_loop):
+                self._rank_screen_system.start(
+                    self._tick_loop._current_tick, ms)
             self._ws_emit_match_state()
             self._trigger_match_end()
             return
@@ -413,6 +420,12 @@ class App:
     def _finalize_match_end(self) -> None:
         """Snapshot MatchState, analyze, print summary, reset for next match."""
         ms = self._match_state
+
+        # Wait for rank screen analysis to complete before snapshotting
+        if (self._rank_screen_system
+                and not self._rank_screen_system._done.is_set()):
+            _logger.info("Waiting for rank screen analysis...")
+            self._rank_screen_system.wait_done(timeout=30.0)
 
         # Finalize control score — if neither team reached 2, infer from result
         if self._control_score_system and ms.control_score:
@@ -1112,6 +1125,11 @@ class App:
         self._tick_loop.register(control_score.on_tick, every_n_ticks=2)
         self._control_score_system = control_score
 
+        from overwatchlooker.rank_screen import RankScreenSystem
+        rank_screen = RankScreenSystem(fps=fps)
+        self._tick_loop.register(rank_screen.on_tick, every_n_ticks=1)
+        self._rank_screen_system = rank_screen
+
         # Subtitle + chat OCR only when Overwolf is not connected
         if not self._overwolf_queue:
             subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
@@ -1216,6 +1234,11 @@ class App:
             control_score = ControlScoreSystem(self, on_score_change=self._on_control_score_change)
             self._tick_loop.register(control_score.on_tick, every_n_ticks=2)
             self._control_score_system = control_score
+
+            from overwatchlooker.rank_screen import RankScreenSystem
+            rank_screen = RankScreenSystem(fps=fps)
+            self._tick_loop.register(rank_screen.on_tick, every_n_ticks=1)
+            self._rank_screen_system = rank_screen
 
             # Replay Overwolf events if recording has them
             overwolf_events_path = self._replay_source.overwolf_events_path

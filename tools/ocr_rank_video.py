@@ -12,11 +12,13 @@ import argparse
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import cv2
 import numpy as np
 from paddlex import create_model
 
-from crop_rank_screen import (
+from overwatchlooker.rank_ocr import (
     REGIONS,
     _REF_W, _REF_H,
     _RANK_MODEL_DIR,
@@ -27,7 +29,6 @@ from crop_rank_screen import (
     ocr_rank_progress,
     ocr_progress_bar,
     ocr_modifiers,
-    extract_progress_bar_delta,
 )
 
 # Delta bar colors in BGR
@@ -160,7 +161,7 @@ def main():
     main_dt, main_ds, main_dsign = ocr_progress_bar(main_frame, values_model)
     if main_dt is None and main_dsign is None:
         demotion_protection = True
-        print(f"  Delta: DEMOTION PROTECTION")
+        print("  Delta: DEMOTION PROTECTION")
     elif delta_text is None:
         # No delta from earlier scan, use main frame
         delta_text = main_dt
@@ -174,7 +175,7 @@ def main():
     if mods:
         print(f"  Modifiers: {', '.join(mod_names)}")
     else:
-        print(f"  Modifiers: none")
+        print("  Modifiers: none")
 
     # Summary
     print(f"\n{'═' * 40}")
@@ -183,7 +184,7 @@ def main():
     if delta_text:
         print(f"  Delta:      {delta_sign}{delta_text}")
     if demotion_protection:
-        print(f"  Demotion:   PROTECTION")
+        print("  Demotion:   PROTECTION")
     if mod_names:
         print(f"  Modifiers:  {', '.join(mod_names)}")
     print(f"{'═' * 40}")

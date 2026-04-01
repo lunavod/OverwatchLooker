@@ -755,7 +755,14 @@ class TickLoop:
             self.frame_source._reader.seek(self.start_tick)
             tick = self.start_tick
             self.input_source.advance_to(tick)
-            # Flush pre-tick hooks so Overwolf events before start are processed
+            # Flush pre-tick hooks up to the start tick. This is critical:
+            # ReplayOverwolfSource.advance_to(tick) pushes ALL recorded events
+            # with frame <= tick into the queue. On the first real tick,
+            # OverwolfSystem drains and processes them all — so match-level
+            # state (game_type, map, mode, roster, etc.) is fully populated
+            # even when replaying from the middle of a recording.
+            # Without this, systems that check e.g. game_type == RANKED at
+            # match_ended would see None because those events fired at frame 0.
             for hook in self._pre_tick_hooks:
                 hook(tick)
             _logger.info(f"Replay: seeked to tick {tick} "

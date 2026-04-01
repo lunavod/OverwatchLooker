@@ -13,7 +13,6 @@ import math
 import random
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 CHARS = "0123456789%+-"

@@ -8,6 +8,7 @@ from overwatchlooker.match_state import (
     MatchState,
     PlayerRole,
     PlayerState,
+    RankProgression,
     ResultSource,
     RoundInfo,
     StatsSnapshot,
@@ -574,3 +575,97 @@ class TestBuildMcpPayload:
         ms.control_score = [(0, 0), (1, 0), (1, 1), (2, 1)]
         output = format_match_state(ms)
         assert "Score: 0:0 -> 1:0 -> 1:1 -> 2:1" in output
+
+
+class TestRankProgression:
+    def _make_match(self) -> MatchState:
+        ms = MatchState(
+            map_name="Ilios",
+            mode="Control",
+            game_type=GameType.RANKED,
+            result=MatchResult.VICTORY,
+            started_at=0,
+            ended_at=600000,
+        )
+        ms.rank_progression = RankProgression(
+            rank="GOLD 3",
+            progress="24%",
+            progress_sign="+",
+            delta="27%",
+            delta_sign="+",
+            modifiers=["VICTORY"],
+        )
+        return ms
+
+    def test_default_none(self):
+        ms = MatchState()
+        assert ms.rank_progression is None
+
+    def test_snapshot_includes_rank_progression(self):
+        ms = self._make_match()
+        snap = ms.snapshot()
+        assert snap.rank_progression is not None
+        assert snap.rank_progression.rank == "GOLD 3"
+        assert snap.rank_progression.delta == "27%"
+        # Deep copy: modifying original doesn't affect snapshot
+        ms.rank_progression.rank = "GOLD 4"
+        assert snap.rank_progression.rank == "GOLD 3"
+
+    def test_format_contains_rank_progression(self):
+        ms = self._make_match()
+        output = format_match_state(ms)
+        assert "Rank Screen: GOLD 3" in output
+        assert "Progress: +24%" in output
+        assert "Delta: +27%" in output
+        assert "Modifiers: VICTORY" in output
+
+    def test_format_demotion_protection(self):
+        ms = self._make_match()
+        ms.rank_progression.delta = ""
+        ms.rank_progression.delta_sign = ""
+        ms.rank_progression.demotion_protection = True
+        ms.rank_progression.modifiers = ["DEFEAT"]
+        output = format_match_state(ms)
+        assert "Demotion: PROTECTION" in output
+
+    def test_format_no_rank_progression(self):
+        ms = MatchState(map_name="Ilios", result=MatchResult.VICTORY)
+        output = format_match_state(ms)
+        assert "Rank Screen" not in output
+
+    def test_payload_contains_rank_progression(self):
+        ms = self._make_match()
+        payload = build_mcp_payload(ms)
+        rp = payload["rank_progression"]
+        assert rp["rank"] == "GOLD 3"
+        assert rp["progress"] == "+24%"
+        assert rp["delta"] == "+27%"
+        assert rp["modifiers"] == ["VICTORY"]
+
+    def test_payload_demotion_protection(self):
+        ms = self._make_match()
+        ms.rank_progression.delta = ""
+        ms.rank_progression.demotion_protection = True
+        payload = build_mcp_payload(ms)
+        rp = payload["rank_progression"]
+        assert rp["demotion_protection"] is True
+        assert "delta" not in rp
+
+    def test_payload_no_rank_progression(self):
+        ms = self._make_match()
+        ms.rank_progression = None
+        payload = build_mcp_payload(ms)
+        assert "rank_progression" not in payload
+
+    def test_to_dict_contains_rank_progression(self):
+        ms = self._make_match()
+        d = ms._to_dict()
+        rp = d["rank_progression"]
+        assert rp["rank"] == "GOLD 3"
+        assert rp["progress"] == "+24%"
+        assert rp["delta"] == "+27%"
+
+    def test_to_dict_none_rank_progression(self):
+        ms = MatchState()
+        d = ms._to_dict()
+        assert d["rank_progression"] is None

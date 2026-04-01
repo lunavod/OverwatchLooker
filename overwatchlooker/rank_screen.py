@@ -1,0 +1,224 @@
+"""Rank screen analysis system — captures frames after match_ended and OCRs rank progression.
+
+Purely tick-based: no wall-clock timing. Works identically in live and replay modes.
+Activated on MatchEndEvent for ranked matches (game_type == RANKED). Collects frames
+for ~10s (delta window), grabs main frame at ~10s, then runs OCR in a background thread.
+
+Replay compatibility:
+    The system checks ms.game_type == RANKED to decide whether to activate.
+    When replaying with --replay-start, game_type is available because TickLoop
+    flushes all Overwolf events up to the start tick before the first real tick
+    runs (see tick.py seek logic). GameTypeUpdate fires at frame 0, so it's
+    always processed even when starting from the middle of a recording.
+"""
+
+import logging
+import threading
+
+import numpy as np
+
+from overwatchlooker.rank_ocr import (
+    REGIONS,
+    _REF_W, _REF_H,
+    _RANK_MODEL_DIR,
+    _VALUES_MODEL_DIR,
+    _MODIFIERS_MODEL_DIR,
+    _COLOR_TOLERANCE,
+    DELTA_GREEN_BGR_1,
+    DELTA_GREEN_BGR_2,
+    DELTA_RED_BGR,
+    ocr_rank_division,
+    ocr_rank_progress,
+    ocr_progress_bar,
+    ocr_modifiers,
+)
+from overwatchlooker.tick import TickContext
+
+_logger = logging.getLogger("overwatchlooker")
+
+_DELTA_WINDOW_SEC = 10.0
+_MAIN_TIME_SEC = 10.0
+
+
+class RankScreenSystem:
+    """Captures frames after match_ended and extracts rank progression via OCR."""
+
+    def __init__(self, fps: int = 10) -> None:
+        self._fps = fps
+        self._delta_window_ticks = int(_DELTA_WINDOW_SEC * fps)
+        self._main_time_tick = int(_MAIN_TIME_SEC * fps)
+
+        self._active = False
+        self._start_tick = 0
+        self._match_state: object | None = None
+
+        # Frame collection
+        self._delta_candidates: list[tuple[int, np.ndarray]] = []
+        self._main_frame: np.ndarray | None = None
+
+        # Scaled progress bar region (computed from first frame)
+        self._pb_region: tuple[int, int, int, int] | None = None
+        self._pixel_threshold = 200
+
+        # Models (loaded lazily, cached across matches)
+        self._rank_model = None
+        self._values_model = None
+        self._modifiers_model = None
+
+        # Completion signal
+        self._done = threading.Event()
+        self._done.set()  # not active = already done
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def start(self, tick: int, match_state: object) -> None:
+        """Activate frame collection starting from this tick."""
+        self._active = True
+        self._start_tick = tick
+        self._match_state = match_state
+        self._done.clear()
+        self._delta_candidates = []
+        self._main_frame = None
+        self._pb_region = None
+        _logger.info(f"Rank screen: started at tick {tick}, "
+                     f"collecting {self._delta_window_ticks} ticks for delta, "
+                     f"main frame at tick +{self._main_time_tick}")
+
+    def on_tick(self, ctx: TickContext) -> None:
+        if not self._active:
+            return
+
+        elapsed = ctx.tick - self._start_tick
+        frame = ctx.frame_bgr
+
+        # Compute scaled region on first frame
+        if self._pb_region is None:
+            h, w = frame.shape[:2]
+            sx, sy = w / _REF_W, h / _REF_H
+            pb = REGIONS["progress_bar"]
+            self._pb_region = (
+                int(pb[0] * sx), int(pb[1] * sy),
+                int(pb[2] * sx), int(pb[3] * sy))
+            self._pixel_threshold = int(200 * sx * sy)
+
+        # Check for delta bar pixels during delta window
+        if elapsed <= self._delta_window_ticks:
+            self._check_delta_candidate(elapsed, frame)
+
+        # Capture main frame
+        if elapsed == self._main_time_tick:
+            self._main_frame = frame.copy()
+
+        # Done collecting — launch analysis in background
+        if elapsed == self._main_time_tick + 1:
+            self._active = False
+            threading.Thread(
+                target=self._run_analysis, daemon=True).start()
+
+    def _check_delta_candidate(self, tick_offset: int,
+                               frame: np.ndarray) -> None:
+        """Check if frame has green/red delta bar pixels."""
+        x1, y1, x2, y2 = self._pb_region  # type: ignore[misc]
+        crop = frame[y1:y2, x1:x2]
+        img_f = crop.astype(float)
+
+        gc = int(np.sum(
+            (np.sqrt(np.sum((img_f - DELTA_GREEN_BGR_1) ** 2, axis=2)) < _COLOR_TOLERANCE) |
+            (np.sqrt(np.sum((img_f - DELTA_GREEN_BGR_2) ** 2, axis=2)) < _COLOR_TOLERANCE)))
+        rc = int(np.sum(
+            np.sqrt(np.sum((img_f - DELTA_RED_BGR) ** 2, axis=2)) < _COLOR_TOLERANCE))
+
+        if gc + rc > self._pixel_threshold:
+            self._delta_candidates.append((tick_offset, frame.copy()))
+
+    def _load_models(self) -> None:
+        """Load OCR models (once, cached across matches)."""
+        if self._rank_model is not None:
+            return
+        from paddlex import create_model  # type: ignore[import-untyped]
+        _logger.info("Rank screen: loading OCR models...")
+        self._rank_model = create_model(
+            model_name="PP-OCRv5_server_rec",
+            model_dir=str(_RANK_MODEL_DIR))
+        self._values_model = create_model(
+            model_name="PP-OCRv5_server_rec",
+            model_dir=str(_VALUES_MODEL_DIR))
+        self._modifiers_model = create_model(
+            model_name="PP-OCRv5_server_rec",
+            model_dir=str(_MODIFIERS_MODEL_DIR))
+        _logger.info("Rank screen: models loaded")
+
+    def _run_analysis(self) -> None:
+        """Run OCR on collected frames, store results in MatchState."""
+        try:
+            self._load_models()
+
+            from overwatchlooker.match_state import RankProgression
+            result = RankProgression()
+
+            # Find delta from candidates (try last 10 in reverse)
+            if self._delta_candidates:
+                for tick_off, frame in reversed(self._delta_candidates[-10:]):
+                    dt, ds, dsign = ocr_progress_bar(frame, self._values_model)
+                    if dt is not None and ds > 0.3:
+                        result.delta = dt
+                        result.delta_sign = dsign or ""
+                        _logger.info(f"Rank screen: delta={dsign}{dt} "
+                                     f"(score={ds:.4f}, tick +{tick_off})")
+                        break
+
+            # Main frame analysis
+            main = self._main_frame
+            if main is None:
+                _logger.warning("Rank screen: no main frame captured")
+                return
+
+            # Check for demotion protection on main frame
+            main_dt, main_ds, main_dsign = ocr_progress_bar(
+                main, self._values_model)
+            if main_dt is None and main_dsign is None:
+                result.demotion_protection = True
+                _logger.info("Rank screen: demotion protection detected")
+            elif not result.delta and main_dt:
+                # No delta from scan, use main frame's delta
+                result.delta = main_dt
+                result.delta_sign = main_dsign or ""
+
+            # Rank + division
+            rank_text, rank_score = ocr_rank_division(
+                main, self._rank_model)
+            result.rank = rank_text
+            _logger.info(f"Rank screen: rank={rank_text} "
+                         f"(score={rank_score:.4f})")
+
+            # Progress
+            prog_text, prog_score, prog_sign = ocr_rank_progress(
+                main, self._values_model)
+            result.progress = prog_text
+            result.progress_sign = prog_sign
+            _logger.info(f"Rank screen: progress={prog_sign}{prog_text} "
+                         f"(score={prog_score:.4f})")
+
+            # Modifiers
+            mods = ocr_modifiers(main, self._modifiers_model)
+            result.modifiers = [m[0] for m in mods]
+            if mods:
+                _logger.info(f"Rank screen: modifiers="
+                             f"{', '.join(result.modifiers)}")
+
+            # Store in match state
+            if self._match_state:
+                self._match_state.rank_progression = result  # type: ignore[attr-defined]
+
+            _logger.info("Rank screen: analysis complete")
+
+        except Exception as e:
+            _logger.warning(f"Rank screen analysis failed: {e}", exc_info=True)
+        finally:
+            self._done.set()
+
+    def wait_done(self, timeout: float = 30.0) -> bool:
+        """Wait for analysis to complete. Returns True if completed."""
+        return self._done.wait(timeout=timeout)
