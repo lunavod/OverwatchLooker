@@ -588,11 +588,10 @@ class TestRankProgression:
             ended_at=600000,
         )
         ms.rank_progression = RankProgression(
-            rank="GOLD 3",
-            progress="24%",
-            progress_sign="+",
-            delta="27%",
-            delta_sign="+",
+            rank="GOLD",
+            division=3,
+            progress_pct=24,
+            delta_pct=27,
             modifiers=["VICTORY"],
         )
         return ms
@@ -605,24 +604,29 @@ class TestRankProgression:
         ms = self._make_match()
         snap = ms.snapshot()
         assert snap.rank_progression is not None
-        assert snap.rank_progression.rank == "GOLD 3"
-        assert snap.rank_progression.delta == "27%"
+        assert snap.rank_progression.rank == "GOLD"
+        assert snap.rank_progression.delta_pct == 27
         # Deep copy: modifying original doesn't affect snapshot
-        ms.rank_progression.rank = "GOLD 4"
-        assert snap.rank_progression.rank == "GOLD 3"
+        ms.rank_progression.rank = "PLATINUM"
+        assert snap.rank_progression.rank == "GOLD"
 
     def test_format_contains_rank_progression(self):
         ms = self._make_match()
         output = format_match_state(ms)
-        assert "Rank Screen: GOLD 3" in output
-        assert "Progress: +24%" in output
-        assert "Delta: +27%" in output
+        assert "GOLD 3" in output
+        assert "24%" in output
+        assert "+27%" in output
         assert "Modifiers: VICTORY" in output
+
+    def test_format_negative_delta(self):
+        ms = self._make_match()
+        ms.rank_progression.delta_pct = -28
+        output = format_match_state(ms)
+        assert "-28%" in output
 
     def test_format_demotion_protection(self):
         ms = self._make_match()
-        ms.rank_progression.delta = ""
-        ms.rank_progression.delta_sign = ""
+        ms.rank_progression.delta_pct = 0
         ms.rank_progression.demotion_protection = True
         ms.rank_progression.modifiers = ["DEFEAT"]
         output = format_match_state(ms)
@@ -631,41 +635,43 @@ class TestRankProgression:
     def test_format_no_rank_progression(self):
         ms = MatchState(map_name="Ilios", result=MatchResult.VICTORY)
         output = format_match_state(ms)
-        assert "Rank Screen" not in output
+        assert "Rank:" not in output or "Rank Screen" not in output
 
-    def test_payload_contains_rank_progression(self):
+    def test_payload_contains_rank_update(self):
         ms = self._make_match()
         payload = build_mcp_payload(ms)
-        rp = payload["rank_progression"]
-        assert rp["rank"] == "GOLD 3"
-        assert rp["progress"] == "+24%"
-        assert rp["delta"] == "+27%"
-        assert rp["modifiers"] == ["VICTORY"]
+        ru = payload["rank_update"]
+        assert ru["rank"] == "GOLD"
+        assert ru["division"] == 3
+        assert ru["progress_pct"] == 24
+        assert ru["delta_pct"] == 27
+        assert ru["modifiers"] == ["VICTORY"]
 
     def test_payload_demotion_protection(self):
         ms = self._make_match()
-        ms.rank_progression.delta = ""
+        ms.rank_progression.delta_pct = 0
         ms.rank_progression.demotion_protection = True
         payload = build_mcp_payload(ms)
-        rp = payload["rank_progression"]
-        assert rp["demotion_protection"] is True
-        assert "delta" not in rp
+        ru = payload["rank_update"]
+        assert ru["demotion_protection"] is True
+        assert ru["delta_pct"] == 0
 
-    def test_payload_no_rank_progression(self):
+    def test_payload_no_rank_update(self):
         ms = self._make_match()
         ms.rank_progression = None
         payload = build_mcp_payload(ms)
-        assert "rank_progression" not in payload
+        assert "rank_update" not in payload
 
-    def test_to_dict_contains_rank_progression(self):
+    def test_to_dict_contains_rank_update(self):
         ms = self._make_match()
         d = ms._to_dict()
-        rp = d["rank_progression"]
-        assert rp["rank"] == "GOLD 3"
-        assert rp["progress"] == "+24%"
-        assert rp["delta"] == "+27%"
+        ru = d["rank_update"]
+        assert ru["rank"] == "GOLD"
+        assert ru["division"] == 3
+        assert ru["progress_pct"] == 24
+        assert ru["delta_pct"] == 27
 
-    def test_to_dict_none_rank_progression(self):
+    def test_to_dict_none_rank_update(self):
         ms = MatchState()
         d = ms._to_dict()
-        assert d["rank_progression"] is None
+        assert d["rank_update"] is None

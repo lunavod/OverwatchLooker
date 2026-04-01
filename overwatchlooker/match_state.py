@@ -125,11 +125,10 @@ class HeroTabCapture:
 @dataclass
 class RankProgression:
     """Rank progression data extracted from the post-match rank screen."""
-    rank: str = ""              # "GOLD 3"
-    progress: str = ""          # "24%"
-    progress_sign: str = ""     # "+" or "-"
-    delta: str = ""             # "27%"
-    delta_sign: str = ""        # "+" or "-"
+    rank: str = ""              # "GOLD"
+    division: int = 0           # 1-5
+    progress_pct: int = 0       # 0-100
+    delta_pct: int = 0          # signed, e.g. +27 or -28
     demotion_protection: bool = False
     modifiers: list[str] = field(default_factory=list)
 
@@ -301,10 +300,11 @@ class MatchState:
             "is_backfill": self.is_backfill,
             "control_score": [list(s) for s in self.control_score] if self.control_score else None,
             "hero_bans": self.hero_bans or None,
-            "rank_progression": ({
+            "rank_update": ({
                 "rank": self.rank_progression.rank,
-                "progress": f"{self.rank_progression.progress_sign}{self.rank_progression.progress}",
-                "delta": f"{self.rank_progression.delta_sign}{self.rank_progression.delta}" if self.rank_progression.delta else None,
+                "division": self.rank_progression.division,
+                "progress_pct": self.rank_progression.progress_pct,
+                "delta_pct": self.rank_progression.delta_pct,
                 "demotion_protection": self.rank_progression.demotion_protection,
                 "modifiers": self.rank_progression.modifiers or None,
             } if self.rank_progression else None),
@@ -417,10 +417,9 @@ def format_match_state(match: MatchState) -> str:
     # Rank progression
     rp = match.rank_progression
     if rp:
-        lines.append(f"Rank Screen: {rp.rank}")
-        lines.append(f"  Progress: {rp.progress_sign}{rp.progress}")
-        if rp.delta:
-            lines.append(f"  Delta: {rp.delta_sign}{rp.delta}")
+        lines.append(f"Rank: {rp.rank} {rp.division} | Progress: {rp.progress_pct}%")
+        if rp.delta_pct:
+            lines.append(f"  Delta: {rp.delta_pct:+d}%")
         if rp.demotion_protection:
             lines.append("  Demotion: PROTECTION")
         if rp.modifiers:
@@ -657,18 +656,16 @@ def build_mcp_payload(match: MatchState) -> dict:
     if match.hero_bans:
         data["banned_heroes"] = match.hero_bans
 
-    # Rank progression
+    # Rank update
     rp = match.rank_progression
     if rp:
-        rp_data: dict = {"rank": rp.rank}
-        if rp.progress:
-            rp_data["progress"] = f"{rp.progress_sign}{rp.progress}"
-        if rp.delta:
-            rp_data["delta"] = f"{rp.delta_sign}{rp.delta}"
-        if rp.demotion_protection:
-            rp_data["demotion_protection"] = True
-        if rp.modifiers:
-            rp_data["modifiers"] = rp.modifiers
-        data["rank_progression"] = rp_data
+        data["rank_update"] = {
+            "rank": rp.rank,
+            "division": rp.division,
+            "progress_pct": rp.progress_pct,
+            "delta_pct": rp.delta_pct,
+            "demotion_protection": rp.demotion_protection,
+            "modifiers": rp.modifiers or None,
+        }
 
     return data

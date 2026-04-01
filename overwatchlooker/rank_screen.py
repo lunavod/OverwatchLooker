@@ -150,6 +150,27 @@ class RankScreenSystem:
             model_dir=str(_MODIFIERS_MODEL_DIR))
         _logger.info("Rank screen: models loaded")
 
+    @staticmethod
+    def _parse_pct(text: str, sign: str = "+") -> int:
+        """Parse OCR percentage text like '27%' into a signed int."""
+        cleaned = text.replace("%", "").strip()
+        try:
+            val = int(cleaned)
+        except ValueError:
+            return 0
+        return val if sign == "+" else -val
+
+    @staticmethod
+    def _parse_rank_division(text: str) -> tuple[str, int]:
+        """Parse OCR rank text like 'GOLD 3' into ('GOLD', 3)."""
+        parts = text.strip().split()
+        if len(parts) >= 2:
+            try:
+                return parts[0].upper(), int(parts[-1])
+            except ValueError:
+                pass
+        return text.upper(), 0
+
     def _run_analysis(self) -> None:
         """Run OCR on collected frames, store results in MatchState."""
         try:
@@ -159,12 +180,14 @@ class RankScreenSystem:
             result = RankProgression()
 
             # Find delta from candidates (try last 10 in reverse)
+            delta_text = None
+            delta_sign = None
             if self._delta_candidates:
                 for tick_off, frame in reversed(self._delta_candidates[-10:]):
                     dt, ds, dsign = ocr_progress_bar(frame, self._values_model)
                     if dt is not None and ds > 0.3:
-                        result.delta = dt
-                        result.delta_sign = dsign or ""
+                        delta_text = dt
+                        delta_sign = dsign
                         _logger.info(f"Rank screen: delta={dsign}{dt} "
                                      f"(score={ds:.4f}, tick +{tick_off})")
                         break
@@ -181,24 +204,25 @@ class RankScreenSystem:
             if main_dt is None and main_dsign is None:
                 result.demotion_protection = True
                 _logger.info("Rank screen: demotion protection detected")
-            elif not result.delta and main_dt:
-                # No delta from scan, use main frame's delta
-                result.delta = main_dt
-                result.delta_sign = main_dsign or ""
+            elif delta_text is None and main_dt:
+                delta_text = main_dt
+                delta_sign = main_dsign
+
+            if delta_text and delta_sign:
+                result.delta_pct = self._parse_pct(delta_text, delta_sign)
 
             # Rank + division
             rank_text, rank_score = ocr_rank_division(
                 main, self._rank_model)
-            result.rank = rank_text
-            _logger.info(f"Rank screen: rank={rank_text} "
+            result.rank, result.division = self._parse_rank_division(rank_text)
+            _logger.info(f"Rank screen: rank={result.rank} {result.division} "
                          f"(score={rank_score:.4f})")
 
             # Progress
             prog_text, prog_score, prog_sign = ocr_rank_progress(
                 main, self._values_model)
-            result.progress = prog_text
-            result.progress_sign = prog_sign
-            _logger.info(f"Rank screen: progress={prog_sign}{prog_text} "
+            result.progress_pct = self._parse_pct(prog_text, prog_sign)
+            _logger.info(f"Rank screen: progress={result.progress_pct}% "
                          f"(score={prog_score:.4f})")
 
             # Modifiers
