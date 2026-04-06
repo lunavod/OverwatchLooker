@@ -342,6 +342,12 @@ class GameStatusEvent:
     timestamp: int
 
 
+@dataclass
+class FallbackModeEvent:
+    """Overwolf app signals that GEP is unavailable — switch to fallback mode."""
+    enabled: bool
+
+
 # Union of all typed events
 OverwolfEvent = (
     GameStateUpdate | GameModeUpdate | BattleTagUpdate | GameTypeUpdate |
@@ -351,7 +357,7 @@ OverwolfEvent = (
     EliminationEvent | DeathEvent | AssistEvent |
     MatchStartEvent | MatchEndEvent | RoundStartEvent | RoundEndEvent |
     RespawnEvent | ReviveEvent |
-    GameStatusEvent
+    GameStatusEvent | FallbackModeEvent
 )
 
 
@@ -569,6 +575,10 @@ class OverwolfReceiver:
                 if msg.get("type") == "ping":
                     await ws.send(json.dumps({"type": "pong"}))
                     continue
+                if msg.get("type") == "fallback_mode":
+                    self._dispatch(FallbackModeEvent(
+                        enabled=bool(msg.get("enabled", False))))
+                    continue
                 events = _parse_message(msg)
                 for event in events:
                     self._dispatch(event)
@@ -625,7 +635,7 @@ _EVENT_CLASSES: dict[str, type] = {
         EliminationEvent, DeathEvent, AssistEvent,
         MatchStartEvent, MatchEndEvent, RoundStartEvent, RoundEndEvent,
         RespawnEvent, ReviveEvent,
-        GameStatusEvent,
+        GameStatusEvent, FallbackModeEvent,
     ]
 }
 

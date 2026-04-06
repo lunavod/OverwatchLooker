@@ -2,7 +2,7 @@
 
 Automated Overwatch 2 match tracker. Collects structured match data (map, mode, queue type, result, full roster with battletags/heroes/roles/stats, hero switches, player joins/leaves) during gameplay and prints a summary at match end.
 
-Primary data source is **Overwolf GEP** (via OverwatchListener) which provides real-time roster, stats, hero swaps, and match lifecycle events for all 10 players. Fallback detection via **subtitle OCR** (Tesseract) for victory/defeat and hero switches when Overwolf is not available. Screen capture uses **memoir-capture** (Windows Graphics Capture + NVENC H.265). Supports **recording** gameplay sessions and **replaying** them for offline analysis. Legacy LLM analyzer backends (ChatGPT/Codex, Claude Vision) are preserved for single-image analysis but no longer used in live mode.
+Primary data source is **Overwolf GEP** (via OverwatchListener) which provides real-time roster, stats, hero swaps, and match lifecycle events for all 10 players. Fallback detection via **subtitle OCR** (Tesseract) for victory/defeat and hero switches when Overwolf is not available. In **fallback mode** (`--fallback`), an LLM vision model (Codex) analyzes the Tab screenshot to extract scoreboard data when Overwolf GEP is unavailable. Screen capture uses **memoir-capture** (Windows Graphics Capture + NVENC H.265). Supports **recording** gameplay sessions and **replaying** them for offline analysis.
 
 ## Setup
 
@@ -70,6 +70,7 @@ Replays a previously recorded session at max speed, running the full detection p
 | `--replay-duration N` | Only replay N seconds of the recording (from start point) |
 | `--auto-recording` | Automatically record matches (starts on match start, stops after match end) |
 | `--auto-recording-tail N` | Seconds to keep recording after match ends (default: 60) |
+| `--fallback` | Enable fallback mode: use subtitle OCR + LLM tab analysis instead of Overwolf GEP |
 
 ## Output format
 
@@ -168,6 +169,8 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `MCP_SOURCE` | `"looker"` | Source identifier sent with MCP submissions |
 | `WS_PORT` | `42685` | WebSocket server port for companion apps |
 | `OVERWOLF_PORT` | `28025` | Overwolf GEP receiver port (OverwatchListener connects here) |
+| `CODEX_MODEL` | `"gpt-5.3-codex"` | LLM model for fallback tab analysis |
+| `CODEX_REASONING` | -- | Reasoning effort for fallback LLM (e.g. `"medium"`) |
 | `TUSD_UPLOAD_URL` | -- | tus upload endpoint for recording uploads |
 | `TUSD_AUTH_KEY` | -- | Bearer token for tus upload authentication |
 
@@ -194,6 +197,7 @@ overwatchlooker/
   ws_server.py                   # WebSocket server for companion apps
   overwolf.py                    # Overwolf GEP receiver (typed events, queue, recording)
   recording_uploader.py          # Background tus resumable upload of recordings
+  llm_analyzer.py                # Codex vision-based Tab screen analyzer (fallback mode)
   models/                        # Finetuned PaddleOCR inference models (Git LFS)
     panel_labels/                # Stat label OCR (Config Medium, A-Z + space)
     panel_values/                # Stat value OCR (Futura, 0-9 + % + , + . + :)

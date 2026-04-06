@@ -60,6 +60,11 @@ def main():
         metavar="SECONDS",
         help="Seconds to keep recording after match ends (default: 60)",
     )
+    parser.add_argument(
+        "--fallback",
+        action="store_true",
+        help="Enable fallback mode: use subtitle OCR + LLM tab analysis instead of Overwolf GEP",
+    )
     args = parser.parse_args()
 
     # Start WebSocket server if requested
@@ -93,6 +98,8 @@ def main():
         features.append("mcp")
     if args.auto_recording:
         features.append(f"auto-recording (tail={args.auto_recording_tail}s)")
+    if args.fallback:
+        features.append("fallback")
     print_status(f"OverwatchLooker started ({', '.join(features)})")
 
     if args.replay:
@@ -112,7 +119,8 @@ def main():
                   overwolf_receiver=overwolf_receiver,
                   use_mcp=args.mcp,
                   auto_recording=args.auto_recording,
-                  auto_recording_tail=args.auto_recording_tail)
+                  auto_recording_tail=args.auto_recording_tail,
+                  fallback=args.fallback)
         app._start_listening()
 
         if args.replay_start and app._tick_loop:
@@ -141,7 +149,8 @@ def main():
                   event_bus=event_bus, overwolf_receiver=overwolf_receiver,
                   use_mcp=args.mcp,
                   auto_recording=args.auto_recording,
-                  auto_recording_tail=args.auto_recording_tail)
+                  auto_recording_tail=args.auto_recording_tail,
+                  fallback=args.fallback)
         app.run()
 
 

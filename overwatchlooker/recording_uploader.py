@@ -19,6 +19,7 @@ from tusclient import client as tus_client
 from tusclient.storage import filestorage
 
 _SCAN_INTERVAL = 60  # seconds between scans
+_MAX_SCAN_INTERVAL = 600  # max backoff when all uploads fail
 _RECORDING_FILES = ["recording.mp4", "recording.meta", "recording.overwolf.jsonl"]
 _CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -135,6 +136,7 @@ def run_scan_loop(
 ) -> None:
     """Scan *recordings_dir* every minute and upload pending recordings."""
     _logger.info(f"Upload scanner started — watching {recordings_dir}")
+    consecutive_failures = 0
     while True:
         if stop_event and stop_event.is_set():
             break
@@ -142,6 +144,7 @@ def run_scan_loop(
             pending = _find_pending(recordings_dir)
             if pending:
                 _logger.info(f"Found {len(pending)} pending upload(s)")
+            any_success = False
             for rec_dir, mcp_id in pending:
                 if stop_event and stop_event.is_set():
                     break
@@ -150,16 +153,33 @@ def run_scan_loop(
                     upload_recording_dir(
                         rec_dir, mcp_id, upload_url, auth_key,
                         cache_file, progress_cb=progress_cb)
-                except Exception:
+                    any_success = True
+                except Exception as exc:
                     _logger.exception(f"Failed to upload {rec_dir.name}")
+                    # Log response body for TUS errors (useful for debugging)
+                    if hasattr(exc, "response_content") and exc.response_content:
+                        _logger.error(f"Server response: {exc.response_content}")
+            if pending:
+                if any_success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
         except Exception:
             _logger.exception("Error during upload scan")
+            consecutive_failures += 1
+
+        # Exponential backoff when all uploads keep failing
+        delay = min(_SCAN_INTERVAL * (2 ** consecutive_failures),
+                    _MAX_SCAN_INTERVAL)
+        if consecutive_failures > 0:
+            _logger.info(f"All uploads failed ({consecutive_failures}x), "
+                         f"next scan in {delay}s")
 
         # Wait for next scan (interruptible)
         if stop_event:
-            stop_event.wait(_SCAN_INTERVAL)
+            stop_event.wait(delay)
         else:
-            time.sleep(_SCAN_INTERVAL)
+            time.sleep(delay)
 
 
 def start_background(

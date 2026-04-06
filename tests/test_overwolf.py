@@ -12,6 +12,7 @@ from overwatchlooker.overwolf import (
     DeathsUpdate,
     EliminationEvent,
     EliminationsUpdate,
+    FallbackModeEvent,
     GameModeUpdate,
     GameState,
     GameStateUpdate,
@@ -425,6 +426,14 @@ class TestSerialization:
         assert type(restored) is type(event)
         assert restored == event
 
+    def test_roundtrip_fallback_mode_event(self):
+        event = FallbackModeEvent(enabled=True)
+        line = serialize_event(event, frame=10)
+        frame, restored = deserialize_event(line)
+        assert frame == 10
+        assert isinstance(restored, FallbackModeEvent)
+        assert restored.enabled is True
+
     def test_roundtrip_roster_update(self):
         entry = RosterEntry(
             player_name="TEST", battlenet_tag="TEST#1234",
@@ -536,6 +545,36 @@ class TestPingPong:
                 await server.wait_closed()
 
         asyncio.run(_run())
+
+
+class TestFallbackModeMessage:
+    def test_fallback_mode_dispatched(self):
+        """Receiver dispatches FallbackModeEvent when it gets a fallback_mode message."""
+        import asyncio
+        from overwatchlooker.overwolf import OverwolfReceiver
+
+        received: list = []
+
+        async def _run():
+            receiver = OverwolfReceiver(port=0)
+            receiver.add_listener(lambda e: received.append(e))
+            import websockets
+            server = await websockets.serve(
+                receiver._handler, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            try:
+                async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+                    await ws.send(json.dumps({"type": "fallback_mode", "enabled": True}))
+                    # Give handler time to process
+                    await asyncio.sleep(0.1)
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        asyncio.run(_run())
+        assert len(received) == 1
+        assert isinstance(received[0], FallbackModeEvent)
+        assert received[0].enabled is True
 
 
 class TestMapCodes:

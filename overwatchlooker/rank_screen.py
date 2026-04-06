@@ -24,6 +24,9 @@ from overwatchlooker.rank_ocr import (
     _VALUES_MODEL_DIR,
     _MODIFIERS_MODEL_DIR,
     _COLOR_TOLERANCE,
+    _scale_region,
+    binarize_bbox,
+    extract_progress_bar_delta,
     DELTA_GREEN_BGR_1,
     DELTA_GREEN_BGR_2,
     DELTA_RED_BGR,
@@ -174,7 +177,14 @@ class RankScreenSystem:
     def _run_analysis(self) -> None:
         """Run OCR on collected frames, store results in MatchState."""
         try:
+            import cv2
+            from pathlib import Path
+
             self._load_models()
+
+            # Debug output directory — overwritten each match
+            dbg = Path(__file__).parent.parent / "debug_rank"
+            dbg.mkdir(exist_ok=True)
 
             from overwatchlooker.match_state import RankProgression
             result = RankProgression()
@@ -182,7 +192,12 @@ class RankScreenSystem:
             # Find delta from candidates (try last 10 in reverse)
             delta_text = None
             delta_sign = None
+            _logger.info(f"Rank screen: {len(self._delta_candidates)} delta candidates")
             if self._delta_candidates:
+                # Save all candidate frames
+                for i, (tick_off, frame) in enumerate(self._delta_candidates[-10:]):
+                    cv2.imwrite(str(dbg / f"delta_candidate_{i}_tick{tick_off}.png"), frame)
+
                 for tick_off, frame in reversed(self._delta_candidates[-10:]):
                     dt, ds, dsign = ocr_progress_bar(frame, self._values_model)
                     if dt is not None and ds > 0.3:
@@ -190,6 +205,17 @@ class RankScreenSystem:
                         delta_sign = dsign
                         _logger.info(f"Rank screen: delta={dsign}{dt} "
                                      f"(score={ds:.4f}, tick +{tick_off})")
+                        # Save winning candidate details
+                        cv2.imwrite(str(dbg / "delta_frame.png"), frame)
+                        h, w = frame.shape[:2]
+                        sx, sy = w / _REF_W, h / _REF_H
+                        scale = (sx + sy) / 2
+                        x1, y1, x2, y2 = _scale_region("progress_bar", sx, sy)
+                        crop = frame[y1:y2, x1:x2]
+                        cv2.imwrite(str(dbg / "delta_pb_crop.png"), crop)
+                        ocr_img, _ = extract_progress_bar_delta(crop, scale)
+                        if ocr_img is not None:
+                            cv2.imwrite(str(dbg / "delta_ocr_input.png"), ocr_img)
                         break
 
             # Main frame analysis
@@ -237,6 +263,29 @@ class RankScreenSystem:
                 self._match_state.rank_progression = result  # type: ignore[attr-defined]
 
             _logger.info("Rank screen: analysis complete")
+
+            # Debug: save all images for offline debugging (never crashes analysis)
+            try:
+                h, w = main.shape[:2]
+                sx, sy = w / _REF_W, h / _REF_H
+                cv2.imwrite(str(dbg / "main_frame.png"), main)
+                for region_name in ("rank_division", "rank_progress",
+                                    "progress_bar", "modifiers"):
+                    rx1, ry1, rx2, ry2 = _scale_region(region_name, sx, sy)
+                    cv2.imwrite(str(dbg / f"main_{region_name}.png"),
+                                main[ry1:ry2, rx1:rx2])
+                # Rank binarized input
+                rx1, ry1, rx2, ry2 = _scale_region("rank_division", sx, sy)
+                rank_gray = cv2.cvtColor(main[ry1:ry2, rx1:rx2], cv2.COLOR_BGR2GRAY)
+                cv2.imwrite(str(dbg / "rank_ocr_input.png"),
+                            binarize_bbox(rank_gray))
+                # Progress binarized input
+                px1, py1, px2, py2 = _scale_region("rank_progress", sx, sy)
+                prog_gray = cv2.cvtColor(main[py1:py2, px1:px2], cv2.COLOR_BGR2GRAY)
+                cv2.imwrite(str(dbg / "progress_ocr_input.png"),
+                            binarize_bbox(prog_gray))
+            except Exception as e:
+                _logger.debug(f"Debug image save failed: {e}")
 
         except Exception as e:
             _logger.warning(f"Rank screen analysis failed: {e}", exc_info=True)

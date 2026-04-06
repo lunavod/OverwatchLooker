@@ -522,11 +522,11 @@ def detect_rank_range(img: np.ndarray) -> RankRange | None:
         for score, cx, y, rw, rh in _find_all_matches(roi, tmpl):
             rank_hits.append((name, score, cx + roi_x, y))
 
-    # Find division icons
+    # Find division icons (lower threshold — small numbers get fuzzier at non-native res)
     div_hits: list[tuple[int, float, int, int]] = []  # div_num, score, cx, y
     for name, tmpl in div_tmpls.items():
         div_num = int(name.split("_")[1])
-        for score, cx, y, rw, rh in _find_all_matches(roi, tmpl):
+        for score, cx, y, rw, rh in _find_all_matches(roi, tmpl, threshold=0.78):
             div_hits.append((div_num, score, cx + roi_x, y))
 
     if len(rank_hits) < 2:
@@ -551,11 +551,13 @@ def detect_rank_range(img: np.ndarray) -> RankRange | None:
     min_str = f"{_RANK_LABELS[min_rank[0]]} {min_div}" if min_div else _RANK_LABELS[min_rank[0]]
     max_str = f"{_RANK_LABELS[max_rank[0]]} {max_div}" if max_div else _RANK_LABELS[max_rank[0]]
 
-    # Wide match: check for yellow pixels left of the leftmost rank icon
+    # Wide match: check for yellow pixels left of the leftmost rank icon.
+    # Stop well before icon center to avoid catching icon edge pixels.
     icon_x = min_rank[2]
+    icon_margin = int(w * 0.03)  # ~77px at 2560, ~58px at 1920
     roi_wide = img[
         int(h * 0.05):int(h * 0.15),
-        int(icon_x - w * 0.10):icon_x,
+        int(icon_x - w * 0.10):max(0, icon_x - icon_margin),
     ]
     b_w, g_w, r_w = cv2.split(roi_wide)
     yellow = (r_w > 180) & (g_w > 140) & (g_w < 220) & (b_w < 80)

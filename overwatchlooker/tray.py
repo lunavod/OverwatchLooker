@@ -30,6 +30,7 @@ from overwatchlooker.match_state import (
 from overwatchlooker.notification import show_notification
 from overwatchlooker.overwolf import (
     DeathEvent,
+    FallbackModeEvent,
     GameModeUpdate,
     GameType,
     GameTypeUpdate,
@@ -91,7 +92,8 @@ class App:
                  overwolf_receiver: OverwolfReceiver | None = None,
                  use_mcp: bool = False,
                  auto_recording: bool = False,
-                 auto_recording_tail: int = 60):
+                 auto_recording_tail: int = 60,
+                 fallback: bool = False):
         self._active = False
         self._detector: SubtitleSystem | None = None
         self._lock = threading.Lock()
@@ -124,6 +126,9 @@ class App:
         self._auto_recording_active = False  # True while auto-recording is in progress
         self._auto_recording_dir: Path | None = None  # current auto-recording directory
         self._auto_stop_timer: threading.Timer | None = None
+        self._fallback_mode = fallback
+        self._fallback_cli = fallback  # True if started with --fallback (permanent)
+        self._pending_rank_screen: MatchState | None = None
         self._pending_analysis = threading.Event()
         self._pending_analysis.set()  # no analysis pending initially
         if event_bus:
@@ -192,6 +197,43 @@ class App:
         """Emit the current match state to the WebSocket bus."""
         self._ws_emit({"type": "match_state", "data": self._match_state._to_dict()})
 
+    def _set_fallback_mode(self, enabled: bool) -> None:
+        """Enable or disable fallback mode (subtitle + LLM instead of GEP)."""
+        if self._fallback_mode == enabled:
+            return
+        # CLI --fallback is permanent — cannot be disabled by WS command
+        if not enabled and self._fallback_cli:
+            _logger.info("Fallback mode disable ignored: started with --fallback")
+            return
+        self._fallback_mode = enabled
+        _logger.info(f"Fallback mode {'enabled' if enabled else 'disabled'}")
+        print_status(f"Fallback mode {'enabled' if enabled else 'disabled'}")
+
+        if not self._tick_loop:
+            return
+
+        # Dynamically register/unregister subtitle + chat systems
+        if enabled and self._subtitle_system is None:
+            from overwatchlooker.tick import ChatSystem, SubtitleSystem
+            from overwatchlooker.config import SUBTITLE_POLL_INTERVAL
+            fps = self._tick_loop.fps
+            subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
+            subtitle_system = SubtitleSystem(on_match=self._on_detection,
+                                             on_detected=self._on_detected,
+                                             on_hero_switch=self._on_hero_switch,
+                                             transcript=self._use_transcript,
+                                             detection_delay_ticks=0)
+            self._tick_loop.register(subtitle_system.on_tick,
+                                     every_n_ticks=subtitle_interval)
+            self._detector = subtitle_system
+            self._subtitle_system = subtitle_system
+
+            chat_system = ChatSystem(on_player_change=self._on_player_change)
+            self._tick_loop.register(chat_system.on_tick,
+                                     every_n_ticks=subtitle_interval)
+            self._chat_system = chat_system
+            _logger.info("Fallback: registered subtitle + chat systems")
+
     def _on_overwolf_event(self, event: OverwolfEvent) -> None:
         """Handle a typed event from the Overwolf receiver — update MatchState."""
         _logger.info(f"Overwolf: {type(event).__name__}: {event}")
@@ -227,11 +269,16 @@ class App:
         if isinstance(event, MatchEndEvent):
             _logger.info(f"MatchEnd: ts={event.timestamp}")
             ms.ended_at = event.timestamp
-            # Start rank screen analysis for ranked matches
-            if (ms.game_type == GameType.RANKED
-                    and self._rank_screen_system and self._tick_loop):
+            # Start rank screen analysis for ranked matches.
+            # Use _pending_rank_screen if MatchOutcomeUpdate already triggered
+            # match end and reset state before MatchEndEvent arrived.
+            rank_ms = self._pending_rank_screen or ms
+            self._pending_rank_screen = None
+            if (rank_ms.game_type == GameType.RANKED
+                    and self._rank_screen_system and self._tick_loop
+                    and self._rank_screen_system._done.is_set()):
                 self._rank_screen_system.start(
-                    self._tick_loop._current_tick, ms)
+                    self._tick_loop._current_tick, rank_ms)
             self._ws_emit_match_state()
             self._trigger_match_end()
             return
@@ -244,12 +291,20 @@ class App:
             else:
                 ms.result = MatchResult.DEFEAT
             ms.result_source = ResultSource.OVERWOLF
+            # Remember that we need rank screen if this was ranked — MatchEndEvent
+            # may arrive after state reset, losing game_type
+            if ms.game_type == GameType.RANKED:
+                self._pending_rank_screen = ms
             if ms.ended_at is None:
                 ms.ended_at = event.timestamp
             self._ws_emit_match_state()
             # If no MatchEndEvent arrives, outcome alone can trigger analysis
             if not ms._analysis_triggered:
                 self._trigger_match_end()
+            return
+
+        if isinstance(event, FallbackModeEvent):
+            self._set_fallback_mode(event.enabled)
             return
 
         if isinstance(event, MapUpdate):
@@ -394,7 +449,8 @@ class App:
             _logger.debug("Match end trigger skipped: already triggered")
             return
         # Skip if match state has no meaningful data (e.g. post-reset ghost events)
-        if not ms.players and ms.started_at is None:
+        # In fallback mode, players/started_at are empty — LLM populates them later
+        if not self._fallback_mode and not ms.players and ms.started_at is None:
             _logger.debug("Match end trigger skipped: empty state")
             return
         # Debounce: ignore triggers within 5s of each other
@@ -421,12 +477,6 @@ class App:
         """Snapshot MatchState, analyze, print summary, reset for next match."""
         ms = self._match_state
 
-        # Wait for rank screen analysis to complete before snapshotting
-        if (self._rank_screen_system
-                and not self._rank_screen_system._done.is_set()):
-            _logger.info("Waiting for rank screen analysis...")
-            self._rank_screen_system.wait_done(timeout=30.0)
-
         # Finalize control score — if neither team reached 2, infer from result
         if self._control_score_system and ms.control_score:
             max_s = self._control_score_system._max_score
@@ -441,9 +491,18 @@ class App:
         if self._auto_recording_dir and not self._replay_source:
             self._write_match_info(ms)
 
+        # Snapshot BEFORE waiting for rank screen — Overwolf sends reset events
+        # (MapUpdate=None, empty roster) after MatchEndEvent, which would corrupt
+        # the state if we snapshot later.
         _logger.info(f"Match end finalizing: hero_tabs={list(ms.hero_tabs.keys())}")
         ms.dump_to_log("MatchEnd")
         snapshot = ms.snapshot()
+        rank_ms = ms  # keep ref — rank screen writes rank_progression here
+
+        # Capture subtitle hero_history before reset (needed for fallback LLM merge)
+        subtitle_hero_history: dict[str, list[tuple[float, str]]] = {}
+        if self._subtitle_system:
+            subtitle_hero_history = self._subtitle_system.hero_history
 
         # Start cooldown
         if self._tick_loop:
@@ -470,7 +529,29 @@ class App:
 
         # Analyze, print, and submit in background thread
         def _finalize():
-            self._analyze_snapshot(snapshot)
+            # Wait for rank screen (MatchEndEvent may arrive after snapshot).
+            # Rank screen writes to the original ms object; copy result to snapshot.
+            if self._pending_rank_screen is not None:
+                _logger.info("Waiting for MatchEndEvent to start rank screen...")
+                for _ in range(40):  # up to 40s
+                    if self._pending_rank_screen is None:
+                        break
+                    time.sleep(1.0)
+                if self._pending_rank_screen is not None:
+                    _logger.warning("MatchEndEvent never arrived — skipping rank screen")
+                    self._pending_rank_screen = None
+
+            if (self._rank_screen_system
+                    and not self._rank_screen_system._done.is_set()):
+                _logger.info("Waiting for rank screen analysis...")
+                self._rank_screen_system.wait_done(timeout=30.0)
+
+            # Copy rank progression from the original ms (rank screen wrote there).
+            # rank_ms is the object rank_screen._match_state points to.
+            if rank_ms.rank_progression and not snapshot.rank_progression:
+                snapshot.rank_progression = rank_ms.rank_progression
+
+            self._analyze_snapshot(snapshot, subtitle_hero_history)
             summary = format_match_state(snapshot)
             from overwatchlooker.display import print_analysis
             print_analysis(summary)
@@ -494,12 +575,20 @@ class App:
 
         threading.Thread(target=_finalize, daemon=True).start()
 
-    def _analyze_snapshot(self, snapshot: MatchState) -> None:
+    def _analyze_snapshot(
+        self,
+        snapshot: MatchState,
+        subtitle_hero_history: dict[str, list[tuple[float, str]]] | None = None,
+    ) -> None:
         """Run hero panel OCR and rank detection on the snapshot's tab screenshots."""
         try:
             import cv2
             import numpy as np
             from overwatchlooker.hero_panel import read_hero_panel, detect_rank_range, detect_hero_bans, detect_party_slots
+
+            # In fallback mode, run LLM analysis first to populate players/map/mode
+            if self._fallback_mode and snapshot.latest_tab:
+                self._run_llm_analysis(snapshot, subtitle_hero_history or {})
 
             local = snapshot.local_player
 
@@ -570,6 +659,111 @@ class App:
 
         except Exception as e:
             _logger.warning(f"Snapshot analysis failed: {e}")
+            _logger.debug(traceback.format_exc())
+
+    def _run_llm_analysis(
+        self,
+        snapshot: MatchState,
+        subtitle_hero_history: dict[str, list[tuple[float, str]]],
+    ) -> None:
+        """Run LLM tab analysis in fallback mode and populate snapshot."""
+        from overwatchlooker.llm_analyzer import analyze_tab_screenshot
+        from overwatchlooker.match_state import PlayerState, TeamSide
+
+        assert snapshot.latest_tab is not None
+        try:
+            llm_data = analyze_tab_screenshot(snapshot.latest_tab.png_bytes)
+        except Exception as e:
+            _logger.warning(f"Fallback LLM analysis failed: {e}")
+            return
+
+        if llm_data.get("not_ow2_tab"):
+            _logger.warning("Fallback: LLM says screenshot is not an OW2 Tab screen")
+            return
+
+        # Map / mode / duration
+        if not snapshot.map_name:
+            snapshot.map_name = llm_data.get("map_name", "")
+        if not snapshot.mode:
+            snapshot.mode = llm_data.get("mode", "")
+        # Duration: synthesize started_at so the computed property works
+        if snapshot.duration is None and snapshot.ended_at:
+            dur = llm_data.get("duration", "")
+            if dur:
+                parts = dur.split(":")
+                try:
+                    dur_ms = int(parts[0]) * 60000 + int(parts[1]) * 1000
+                    if snapshot.started_at is None:
+                        snapshot.started_at = snapshot.ended_at - dur_ms
+                except (ValueError, IndexError):
+                    pass
+
+        # Game type from queue_type
+        if not snapshot.game_type or snapshot.game_type == GameType.UNKNOWN:
+            if llm_data.get("queue_type") == "COMPETITIVE":
+                snapshot.game_type = GameType.RANKED
+            else:
+                snapshot.game_type = GameType.UNRANKED
+
+        # Players — only populate if Overwolf didn't provide a roster
+        if not snapshot.players:
+            _ROLE_MAP = {"TANK": PlayerRole.TANK, "DPS": PlayerRole.DAMAGE,
+                         "SUPPORT": PlayerRole.SUPPORT}
+            for p_data in llm_data.get("players", []):
+                name = p_data.get("player_name", "").upper()
+                if not name:
+                    continue
+                ps = PlayerState(player_name=name, battletag=name)
+                ps.team_side = (TeamSide.ALLY if p_data.get("team") == "ALLY"
+                                else TeamSide.ENEMY)
+                ps.role = _ROLE_MAP.get(p_data.get("role", ""))
+                ps.is_local = bool(p_data.get("is_self"))
+
+                # Stats
+                stats_fields = ["eliminations", "assists", "deaths",
+                                "damage", "healing", "mitigation"]
+                has_stats = any(p_data.get(f) is not None for f in stats_fields)
+                if has_stats:
+                    ps.stats = StatsSnapshot(
+                        kills=p_data.get("eliminations") or 0,
+                        assists=p_data.get("assists") or 0,
+                        deaths=p_data.get("deaths") or 0,
+                        damage=float(p_data.get("damage") or 0),
+                        healing=float(p_data.get("healing") or 0),
+                        mitigation=float(p_data.get("mitigation") or 0),
+                    )
+
+                # Hero from LLM (only the selected player has hero_name)
+                hero = p_data.get("hero_name")
+                if hero:
+                    ps.hero_swaps.append(HeroSwap(
+                        hero=hero,
+                        detected_at=snapshot.ended_at or 0,
+                        source=HeroSource.SUBTITLE_OCR,
+                    ))
+
+                snapshot.players[name] = ps
+
+            # Merge subtitle hero_history into LLM-populated players
+            if subtitle_hero_history:
+                for username, entries in subtitle_hero_history.items():
+                    # Find matching player (subtitle uses plain name, LLM uses uppercase)
+                    p = snapshot.find_player_by_name(username)
+                    if p is None:
+                        continue
+                    # Clear any hero swap from LLM if subtitle has richer data
+                    if entries:
+                        p.hero_swaps.clear()
+                        for sim_time, hero in entries:
+                            p.hero_swaps.append(HeroSwap(
+                                hero=hero,
+                                detected_at=int(sim_time * 1000),
+                                source=HeroSource.SUBTITLE_OCR,
+                            ))
+
+        _logger.info(f"Fallback LLM: populated {len(snapshot.players)} players, "
+                     f"map={snapshot.map_name}, mode={snapshot.mode}, "
+                     f"game_type={snapshot.game_type}")
 
     _SKIP_GAME_TYPES = {GameType.PRACTICE, GameType.TUTORIAL, GameType.SKIRMISH,
                          GameType.HERO_MASTERY}
@@ -1130,8 +1324,8 @@ class App:
         self._tick_loop.register(rank_screen.on_tick, every_n_ticks=1)
         self._rank_screen_system = rank_screen
 
-        # Subtitle + chat OCR only when Overwolf is not connected
-        if not self._overwolf_queue:
+        # Subtitle + chat OCR when Overwolf is not connected OR fallback mode
+        if not self._overwolf_queue or self._fallback_mode:
             subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
             subtitle_system = SubtitleSystem(on_match=self._on_detection,
                                              on_detected=self._on_detected,
@@ -1243,8 +1437,8 @@ class App:
             # Replay Overwolf events if recording has them
             overwolf_events_path = self._replay_source.overwolf_events_path
             has_overwolf_replay = overwolf_events_path and overwolf_events_path.exists()
-            # Subtitle + chat OCR only when no Overwolf events in recording
-            if not has_overwolf_replay:
+            # Subtitle + chat OCR when no Overwolf events or fallback mode
+            if not has_overwolf_replay or self._fallback_mode:
                 subtitle_interval = max(1, int(fps * SUBTITLE_POLL_INTERVAL))
                 subtitle_system = SubtitleSystem(on_match=self._on_detection,
                                                  on_detected=self._on_detected,
