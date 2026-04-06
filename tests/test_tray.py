@@ -283,6 +283,123 @@ class TestOverwolfEventHandling:
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
         assert len(app._match_state.players["P1#1"].hero_swaps) == 0
 
+    def test_reconnect_stats_offset(self, app):
+        """When stats drop, treat as reconnect and add offset."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        # Initial roster: player has 5 kills
+        entry1 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=5, deaths=2, assists=3, damage=1000, healed=500, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=1000))
+        p = app._match_state.players["P1#1"]
+        assert p.stats.kills == 5
+        assert p.stats.deaths == 2
+
+        # Reconnect: stats reset to 0
+        entry2 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry2, timestamp=2000))
+        assert p.stats.kills == 5  # offset applied: 5 + 0
+        assert p.stats.deaths == 2
+
+        # Post-reconnect: new stats accumulate on top of offset
+        entry3 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=3, deaths=1, assists=2, damage=400, healed=200, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry3, timestamp=3000))
+        assert p.stats.kills == 8  # 5 + 3
+        assert p.stats.deaths == 3  # 2 + 1
+        assert p.stats.assists == 5  # 3 + 2
+        assert p.stats.damage == 1400.0  # 1000 + 400
+
+    def test_reconnect_double(self, app):
+        """Two reconnects: offset stacks correctly."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        def _entry(k, d):
+            return RosterEntry(
+                player_name="P1", battlenet_tag="P1#1", is_local=False,
+                is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+                team=0, kills=k, deaths=d, assists=0, damage=0, healed=0, mitigated=0,
+            )
+        # Accumulate to 10/4
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=_entry(10, 4), timestamp=1000))
+        p = app._match_state.players["P1#1"]
+        assert p.stats.kills == 10
+
+        # First reconnect: reset to 0
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=_entry(0, 0), timestamp=2000))
+        assert p.stats.kills == 10  # offset=10
+
+        # Accumulate to 5/2 post-reconnect
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=_entry(5, 2), timestamp=3000))
+        assert p.stats.kills == 15  # 10 + 5
+
+        # Second reconnect: reset again
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=_entry(0, 0), timestamp=4000))
+        assert p.stats.kills == 15  # offset=15
+
+        # Accumulate to 2/1 post-second-reconnect
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=_entry(2, 1), timestamp=5000))
+        assert p.stats.kills == 17  # 15 + 2
+        assert p.stats.deaths == 7  # 4 + 2 + 1
+
+    def test_reconnect_hero_swap_stats_include_offset(self, app):
+        """Hero swap snapshot after reconnect should include the offset."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry1 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=5, deaths=2, assists=3, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=1000))
+
+        # Reconnect
+        entry2 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=0, deaths=0, assists=0, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry2, timestamp=2000))
+
+        # Hero swap post-reconnect with new kills
+        entry3 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="MERCY", hero_role="SUPPORT",
+            team=0, kills=2, deaths=1, assists=1, damage=0, healed=0, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry3, timestamp=3000))
+        p = app._match_state.players["P1#1"]
+        # Hero swap snapshot should include offset
+        swap = p.hero_swaps[-1]
+        assert swap.stats_at_detection.kills == 7  # 5 + 2
+        assert swap.stats_at_detection.deaths == 3  # 2 + 1
+
+    def test_no_reconnect_on_normal_increase(self, app):
+        """Normal stat increase should NOT trigger reconnect detection."""
+        from overwatchlooker.overwolf import RosterUpdate, RosterEntry
+        entry1 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=5, deaths=2, assists=3, damage=1000, healed=500, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry1, timestamp=1000))
+        entry2 = RosterEntry(
+            player_name="P1", battlenet_tag="P1#1", is_local=False,
+            is_teammate=True, hero_name="ANA", hero_role="SUPPORT",
+            team=0, kills=8, deaths=3, assists=5, damage=2000, healed=800, mitigated=0,
+        )
+        app._on_overwolf_event(RosterUpdate(slot=0, entry=entry2, timestamp=2000))
+        p = app._match_state.players["P1#1"]
+        assert p.stats.kills == 8  # no offset
+        assert p._stats_offset.kills == 0
+
     def test_hero_name_resolved_via_match(self, app):
         """Overwolf hero names like JETPACKCAT should resolve to canonical names."""
         from overwatchlooker.overwolf import RosterUpdate, RosterEntry

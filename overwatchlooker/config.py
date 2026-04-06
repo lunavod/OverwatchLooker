@@ -24,6 +24,9 @@ WS_PORT: int = int(os.environ.get("WS_PORT", "42685"))
 # Overwolf receiver (OverwatchListener connects here)
 OVERWOLF_PORT: int = int(os.environ.get("OVERWOLF_PORT", "28025"))
 
+# Auto-recording cleanup
+RECORDINGS_KEEP: int = int(os.environ.get("RECORDINGS_KEEP", "5"))
+
 # LLM fallback analyzer (used when Overwolf GEP is unavailable)
 CODEX_MODEL: str = os.environ.get("CODEX_MODEL", "gpt-5.3-codex")
 CODEX_REASONING: str | None = os.environ.get("CODEX_REASONING", None) or None

@@ -126,6 +126,27 @@ def _find_pending(recordings_dir: Path) -> list[tuple[Path, str]]:
     return pending
 
 
+def cleanup_old_recordings(recordings_dir: Path, keep: int) -> None:
+    """Delete uploaded recordings beyond the *keep* most recent."""
+    if keep <= 0 or not recordings_dir.is_dir():
+        return
+    # All recording dirs, sorted newest first (by name = timestamp)
+    all_dirs = sorted(
+        (d for d in recordings_dir.iterdir() if d.is_dir()),
+        reverse=True,
+    )
+    # Everything beyond the keep threshold is eligible for deletion
+    for d in all_dirs[keep:]:
+        if not (d / ".uploaded").exists():
+            continue  # only delete uploaded recordings
+        try:
+            import shutil
+            shutil.rmtree(d)
+            _logger.info(f"Cleaned up old recording: {d.name}")
+        except Exception as e:
+            _logger.warning(f"Failed to delete {d.name}: {e}")
+
+
 def run_scan_loop(
     recordings_dir: Path,
     upload_url: str,
@@ -133,6 +154,7 @@ def run_scan_loop(
     cache_file: Path,
     stop_event: threading.Event | None = None,
     progress_cb: Callable[[str, int, int], None] | None = None,
+    keep: int = 5,
 ) -> None:
     """Scan *recordings_dir* every minute and upload pending recordings."""
     _logger.info(f"Upload scanner started — watching {recordings_dir}")
@@ -164,6 +186,9 @@ def run_scan_loop(
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1
+            # Clean up old uploaded recordings
+            if any_success and keep > 0:
+                cleanup_old_recordings(recordings_dir, keep)
         except Exception:
             _logger.exception("Error during upload scan")
             consecutive_failures += 1
@@ -206,10 +231,13 @@ def start_background(
 
     cache_file = recordings_dir.parent / ".upload_cache" / "uploads.json"
 
+    from overwatchlooker.config import RECORDINGS_KEEP
+
     stop_event = threading.Event()
     thread = threading.Thread(
         target=run_scan_loop,
         args=(recordings_dir, upload_url, auth_key, cache_file, stop_event),
+        kwargs={"keep": RECORDINGS_KEEP},
         daemon=True,
         name="recording-uploader",
     )

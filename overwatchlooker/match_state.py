@@ -89,6 +89,7 @@ class PlayerState:
     slot: int | None = None  # roster_0..roster_9
     hero_swaps: list[HeroSwap] = field(default_factory=list)
     stats: StatsSnapshot | None = None  # latest cumulative from Overwolf
+    _stats_offset: StatsSnapshot = field(default_factory=StatsSnapshot)  # reconnect offset
     hero_panels: list[HeroPanel] = field(default_factory=list)
     in_party: bool = False  # green party indicator on scoreboard
     joined_at: int | None = None  # epoch ms

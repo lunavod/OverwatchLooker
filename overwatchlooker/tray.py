@@ -398,14 +398,47 @@ class App:
                 else TeamSide.ENEMY
             )
 
-        # Stats
+        # Reconnect detection: if any incoming cumulative stat is lower than
+        # what we already have, the player reconnected and their stats reset.
+        # Save the current stats as an offset so we can add them back.
+        if player.stats is not None:
+            prev = player.stats
+            off = player._stats_offset
+            # Compare against raw incoming value (prev already includes offset)
+            prev_raw_kills = prev.kills - off.kills
+            prev_raw_deaths = prev.deaths - off.deaths
+            prev_raw_assists = prev.assists - off.assists
+            prev_raw_damage = prev.damage - off.damage
+            prev_raw_healing = prev.healing - off.healing
+            prev_raw_mit = prev.mitigation - off.mitigation
+            if (entry.kills < prev_raw_kills
+                    or entry.deaths < prev_raw_deaths
+                    or entry.assists < prev_raw_assists
+                    or entry.damage < prev_raw_damage
+                    or entry.healed < prev_raw_healing
+                    or entry.mitigated < prev_raw_mit):
+                player._stats_offset = StatsSnapshot(
+                    kills=prev.kills,
+                    deaths=prev.deaths,
+                    assists=prev.assists,
+                    damage=prev.damage,
+                    healing=prev.healing,
+                    mitigation=prev.mitigation,
+                )
+                _logger.info(f"Reconnect detected for {entry.player_name}: "
+                             f"stats dropped (K {prev_raw_kills}->{entry.kills} "
+                             f"D {prev_raw_deaths}->{entry.deaths}), "
+                             f"offset saved")
+
+        # Stats (add reconnect offset)
+        off = player._stats_offset
         player.stats = StatsSnapshot(
-            kills=entry.kills,
-            deaths=entry.deaths,
-            assists=entry.assists,
-            damage=entry.damage,
-            healing=entry.healed,
-            mitigation=entry.mitigated,
+            kills=entry.kills + off.kills,
+            deaths=entry.deaths + off.deaths,
+            assists=entry.assists + off.assists,
+            damage=entry.damage + off.damage,
+            healing=entry.healed + off.healing,
+            mitigation=entry.mitigated + off.mitigation,
         )
 
         # Hero swap detection
@@ -419,15 +452,20 @@ class App:
                     detected_at=event.timestamp,
                     source=HeroSource.OVERWOLF_ROSTER,
                     stats_at_detection=StatsSnapshot(
-                        kills=entry.kills, deaths=entry.deaths,
-                        assists=entry.assists, damage=entry.damage,
-                        healing=entry.healed, mitigation=entry.mitigated,
+                        kills=entry.kills + off.kills,
+                        deaths=entry.deaths + off.deaths,
+                        assists=entry.assists + off.assists,
+                        damage=entry.damage + off.damage,
+                        healing=entry.healed + off.healing,
+                        mitigation=entry.mitigated + off.mitigation,
                     ),
                 ))
                 if current is not None:
                     _logger.info(f"Roster hero swap: {entry.player_name} "
                                  f"{current} -> {entry.hero_name} "
-                                 f"(K={entry.kills} D={entry.deaths} A={entry.assists})")
+                                 f"(K={entry.kills + off.kills} "
+                                 f"D={entry.deaths + off.deaths} "
+                                 f"A={entry.assists + off.assists})")
 
         # Role
         if entry.hero_role:

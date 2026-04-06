@@ -171,6 +171,7 @@ All settings are in `overwatchlooker/config.py`, loaded from environment variabl
 | `OVERWOLF_PORT` | `28025` | Overwolf GEP receiver port (OverwatchListener connects here) |
 | `CODEX_MODEL` | `"gpt-5.3-codex"` | LLM model for fallback tab analysis |
 | `CODEX_REASONING` | -- | Reasoning effort for fallback LLM (e.g. `"medium"`) |
+| `RECORDINGS_KEEP` | `5` | Number of auto-recordings to keep; older uploaded recordings are deleted |
 | `TUSD_UPLOAD_URL` | -- | tus upload endpoint for recording uploads |
 | `TUSD_AUTH_KEY` | -- | Bearer token for tus upload authentication |
 
