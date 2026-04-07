@@ -1,54 +1,57 @@
 # Training OCR Models
 
-Guide for training or retraining the hero panel OCR models from scratch on a freshly cloned repository.
+Guide for training or retraining the hero panel OCR models. All training, data generation, and export tools live in `everything_paddle/` — a self-contained uv subproject with its own Python environment and PaddlePaddle dependencies.
 
 ## Prerequisites
 
-- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- Python 3.11+ with [uv](https://docs.astral.sh/uv/)
 - NVIDIA GPU with CUDA support (tested on RTX 4080)
-- PaddlePaddle GPU and PaddleOCR installed (`uv sync` handles this)
 - The fonts used by Overwatch 2's hero panel (not included in the repo — these are paid/free fonts, must be sourced by the user):
   - **Config Medium** (`Config-Medium.ttf`) — for stat labels. Available at [globalfonts.pro/font/config](https://globalfonts.pro/font/config).
   - **Futura No2 Demi Bold** (`Futura No2 Demi Bold.ttf` or similar) — for stat values. A community-sourced version is available at [Resike/Overwatch](https://github.com/Resike/Overwatch/tree/master/Fonts) (listed as `Futura No 2 D DemiBold.ttf`).
   - **Big Noodle Titling Oblique** (`big_noodle_titling_oblique.ttf` or similar) — for featured stat values. Available at [Resike/Overwatch](https://github.com/Resike/Overwatch/tree/master/Fonts).
 
-## Repository Structure
+## Setup
 
-```
-tools/
-  generate_label_training.py    # Synthetic data generator for labels
-  generate_value_training.py    # Synthetic data generator for values
-  generate_featured_training.py # Synthetic data generator for featured values
-  preprocess_recaug.py          # Offline RecAug augmentation
-training_data/
-  PP-OCRv5_server_rec_pretrained.pdparams   # Base pretrained model (required)
-  panel_labels/                 # Labels model training data + output
-  panel_values/                 # Values model training data + output
-  panel_featured/               # Featured model training data + output
-  panel_featured_finetune.yml   # Example training config (featured model)
-paddleocr_repo/                 # PaddleOCR clone (used for training scripts)
-overwatchlooker/models/         # Production inference models (git-tracked)
-  panel_labels/                 # Exported labels model
-  panel_values/                 # Exported values model
-  panel_featured/               # Exported featured values model
+Run the init script from `everything_paddle/`:
+
+```powershell
+cd everything_paddle
+.\init.ps1
 ```
 
-## Step 0: Setup Dependencies
+This will:
+1. Create a Python 3.11 environment with PaddlePaddle GPU, paddle2onnx, and all training deps (`uv sync`)
+2. Clone PaddleOCR v3.1.1 into `paddleocr_repo/` (if not already present)
+3. Check for the pretrained base model weights
 
-### Clone PaddleOCR
+If the pretrained weights are missing, download them manually from [PaddlePaddle/PP-OCRv5_server_rec](https://huggingface.co/PaddlePaddle/PP-OCRv5_server_rec) and place at `training_data/PP-OCRv5_server_rec_pretrained.pdparams`.
 
-The training scripts live in a local PaddleOCR clone (gitignored):
+All commands below run from the `everything_paddle/` directory.
 
-```bash
-git clone https://github.com/PaddlePaddle/PaddleOCR.git paddleocr_repo
-```
-
-### Get the Pretrained Base Model
-
-The PP-OCRv5 server rec pretrained weights are required as the starting point for finetuning. Download from [PaddlePaddle/PP-OCRv5_server_rec](https://huggingface.co/PaddlePaddle/PP-OCRv5_server_rec) and place at:
+## Directory Structure
 
 ```
-training_data/PP-OCRv5_server_rec_pretrained.pdparams
+everything_paddle/
+  pyproject.toml                 # PaddlePaddle + training dependencies
+  init.ps1                      # One-time setup script
+  export.py                     # ONNX export script
+  tools/
+    generate_label_training.py   # Synthetic data generator for labels
+    generate_value_training.py   # Synthetic data generator for values
+    generate_featured_training.py
+    generate_delta_training.py
+    generate_modifier_training.py
+    generate_rank_training.py
+    generate_side_training.py
+    preprocess_recaug.py         # Offline RecAug augmentation
+  training_data/
+    PP-OCRv5_server_rec_pretrained.pdparams   # Base pretrained model
+    panel_labels/                # Labels model training data + output
+    panel_values/                # Values model training data + output
+    panel_featured/              # Featured model training data + output
+    ...
+  paddleocr_repo/                # PaddleOCR clone (for training scripts)
 ```
 
 ## Step 1: Generate Synthetic Training Data
@@ -82,10 +85,6 @@ Output: same structure as labels, with dict containing `0-9 % , . :`.
 ```bash
 uv run python tools/generate_featured_training.py --font /path/to/big_noodle_titling.ttf --count 5000 --output training_data/panel_featured
 ```
-
-Generates white-on-black number images using Big Noodle Titling font at larger sizes (48-96px, weighted toward 80px for 4K). Heavy oversampling of timer patterns (MM:SS) since the featured stat frequently shows objective contest time.
-
-Output: same structure as values, with dict containing `0-9 % , . :`.
 
 ### Important: Keep It Simple
 
@@ -126,7 +125,7 @@ Optimizer:
   beta2: 0.999
   lr:
     name: Cosine
-    learning_rate: 0.00005                                     # 5e-5, good for single-GPU
+    learning_rate: 0.00005
     warmup_epoch: 2
   regularizer:
     name: L2
@@ -179,7 +178,7 @@ Train:
     - DecodeImage:
         img_mode: BGR
         channel_first: false
-    - RecAug:                                                  # KEEP — critical for generalization
+    - RecAug:
     - MultiLabelEncode:
         gtc_encode: NRTRLabelEncode
     - RecResizeImg:
@@ -271,14 +270,6 @@ uv run python -m paddleocr_repo.tools.train -c training_data/panel_featured_fine
 - **Epoch 20-50**: Plateaus around 98-99%.
 - **Epoch 100**: Final accuracy ~99.5% for labels, ~100% for values.
 
-### Training Speed
-
-With RecAug and `num_workers: 4` on a single GPU:
-- 5K samples: ~20-30 minutes for 100 epochs
-- 69K samples: ~6-7 hours for 100 epochs
-
-Without RecAug: roughly half the time, but **do not do this** for production models.
-
 ### Resuming from Checkpoint
 
 If training is interrupted, set `checkpoints` in the config:
@@ -292,7 +283,7 @@ Remove this line after training completes (it conflicts with export).
 
 ## Step 4: Export for Inference
 
-After training, export the best checkpoint to an inference model:
+After training, export the best checkpoint to a PaddlePaddle inference model:
 
 ```bash
 uv run python -m paddleocr_repo.tools.export_model \
@@ -303,92 +294,47 @@ uv run python -m paddleocr_repo.tools.export_model \
 
 **Important**: Remove or clear the `checkpoints` field in the config before exporting, otherwise export will fail or load the wrong weights.
 
-The exported model has a `model_name` field in `inference.yml` that must match `PP-OCRv5_server_rec` for `paddlex.create_model` to load it. Fix it:
+Fix the `model_name` field in the exported `inference.yml`:
 
 ```bash
 sed -i 's/panel_featured_rec/PP-OCRv5_server_rec/' training_data/panel_featured/inference/inference.yml
 ```
 
-The sed pattern is always `s/<config_model_name>/PP-OCRv5_server_rec/` where `<config_model_name>` is the `model_name` from your training config's `Global` section.
-
 ## Step 5: Export to ONNX
 
-After exporting the PaddlePaddle inference model, convert it to ONNX format. The app uses ONNX Runtime for inference (no PaddlePaddle dependency at runtime).
+Convert the PaddlePaddle inference model to ONNX format. The main app uses ONNX Runtime for inference — no PaddlePaddle at runtime.
 
-### ONNX export environment setup
-
-The export requires a separate Python environment because `paddle2onnx` has strict version requirements that conflict with the main project's PaddlePaddle version.
-
-**One-time setup** from the repo root:
+Export all models at once:
 
 ```bash
-cd onnx_export
-uv sync          # creates .venv with Python 3.11 + paddlepaddle 3.1.1 + paddle2onnx 2.0.2rc3
+uv run python export.py
 ```
 
-If setting up from scratch (no `onnx_export/` directory):
+Or export a specific model:
 
 ```bash
-mkdir onnx_export && cd onnx_export
-uv init --python 3.11 --no-workspace
-uv add paddlepaddle==3.1.1 paddle2onnx==2.0.2rc3 packaging setuptools onnxruntime onnx_graphsurgeon colored
+uv run python export.py training_data/panel_featured/inference
 ```
 
-**Why a separate env?** `paddle2onnx` ships a C++ extension DLL that must match the PaddlePaddle version exactly. The main project uses PaddlePaddle 3.3+ (for GPU training), but `paddle2onnx` 2.0.2rc3 only works with PaddlePaddle 3.1.1. The Python version doesn't matter — the constraint is the PaddlePaddle DLL compatibility.
+Verify the output `.onnx` file is ~72 MB (not 0 bytes).
 
-### Export command
+## Step 6: Deploy
+
+Copy the exported ONNX model and character dictionary to the production location:
 
 ```bash
-onnx_export/.venv/Scripts/paddle2onnx.exe \
-    --model_dir training_data/<name>/inference \
-    --model_filename inference.json \
-    --params_filename inference.pdiparams \
-    --save_file training_data/<name>/inference/inference.onnx \
-    --opset_version 14
+mkdir -p ../overwatchlooker/models/<name>
+cp training_data/<name>/inference/inference.onnx ../overwatchlooker/models/<name>/
+cp training_data/<name>/dict.txt ../overwatchlooker/models/<name>/
 ```
 
-Verify the output file is ~73 MB (not 0 bytes). If it's 0 bytes, the export silently failed — check that you're using the `onnx_export/` env's `paddle2onnx.exe`, not the main env's.
-
-## Step 6: Test on Real Screenshots
-
-Test the exported ONNX model:
-
-```python
-from overwatchlooker.ocr import OnnxRecModel
-import cv2
-
-model = OnnxRecModel('training_data/panel_featured/inference')
-img = cv2.imread('path/to/cropped_value.png')
-result = list(model.predict(img))
-print(result[0]["rec_text"], result[0]["rec_score"])
-```
-
-Or run the full hero panel pipeline:
+Or for training-only models (rank_division, modifiers):
 
 ```bash
-uv run python debug_panel_structure.py path/to/tab_screenshot.png
+uv run python export.py --deploy
 ```
 
-Expected output: every label and value read correctly. If not, check:
-
-1. **Values read as empty or garbled**: Are you cropping to text bounds before feeding to the model? Full 869px strips must be cropped to just the text region.
-2. **Labels misread**: Check that RecAug was applied (either during training or via preprocessing).
-3. **Commas read as periods**: Ensure `,` is in the character dictionary and training data has comma-number samples.
-4. **Featured value wrong**: Check the font — the game uses a different font for the featured stat than for regular values.
-
-## Step 7: Deploy
-
-Copy the exported model files to the production location:
-
-```bash
-mkdir -p overwatchlooker/models/<name>
-cp training_data/<name>/inference/inference.onnx overwatchlooker/models/<name>/
-cp training_data/<name>/dict.txt overwatchlooker/models/<name>/
-```
-
-Only `inference.onnx` and `dict.txt` are needed at runtime. The `.json` and `.pdiparams` files are only needed for re-export.
-
-Commit via git (`.onnx` files are tracked via Git LFS).
+Only `inference.onnx` and `dict.txt` are needed at runtime.
 
 ## Lessons Learned
 
@@ -406,36 +352,18 @@ These are hard-won findings from multiple training iterations. Read before chang
 
 - **Color/background variation in training data** — 69K samples with varied colors scored 99.5% on synthetic data but **0% on real game screenshots**. The model overfits to PIL's font rendering artifacts instead of learning robust letterforms.
 - **Removing RecAug** — without spatial augmentation the model doesn't generalize from synthetic to real, even with more training data
-- **Large training sets without RecAug** — more data doesn't help if the model can't bridge the rendering gap
 - **Feeding full-width strips to the values model** — 869px strips with a single thin character (like `1`) get destroyed when resized to 320px. Always crop to text bounds first.
-
-### Architecture Reference
-
-All models use the same architecture (finetuned from PP-OCRv5 server rec):
-
-```
-Backbone: PPHGNetV2_B4 (text_rec mode)
-Neck: SVTR (dims=120, depth=2, hidden_dims=120)
-Head: MultiHead
-  - CTCHead (with SVTR neck, use_guide=True)
-  - NRTRHead (nrtr_dim=384)
-Loss: MultiLoss (CTCLoss + NRTRLoss)
-PostProcess: CTCLabelDecode
-Input shape: [3, 48, 320]
-```
 
 ## Quick Reference: Adding a New Model
 
-Copy-paste checklist for adding a new OCR model for a different font. Replace `<name>` with your model name (e.g. `panel_featured`).
+All commands run from `everything_paddle/`. Replace `<name>` with your model name.
 
 ```bash
 # 1. Create training data generator (copy and adapt an existing one)
 cp tools/generate_value_training.py tools/generate_<name>_training.py
-# Edit: change font sizes, value distribution, output prefix, default output dir
 
-# 2. Create training config (copy the featured model config as template)
+# 2. Create training config
 cp training_data/panel_featured_finetune.yml training_data/<name>_finetune.yml
-# Edit: replace panel_featured with <name>, adjust max_text_length/use_space_char
 
 # 3. Generate training data
 uv run python tools/generate_<name>_training.py --font /path/to/font.ttf
@@ -446,7 +374,7 @@ uv run python tools/preprocess_recaug.py \
   --output training_data/<name>_aug \
   --variants 1 --workers 4
 
-# 5. Train (~35 min on RTX 4080, first good checkpoint ~10 min)
+# 5. Train
 uv run python -m paddleocr_repo.tools.train -c training_data/<name>_finetune.yml
 
 # 6. Export PaddlePaddle inference model
@@ -455,27 +383,13 @@ uv run python -m paddleocr_repo.tools.export_model \
   -o Global.checkpoints=./training_data/<name>/output/best_accuracy \
      Global.save_inference_dir=./training_data/<name>/inference
 
-# 7. Fix model name in exported config
+# 7. Fix model name
 sed -i 's/<name>_rec/PP-OCRv5_server_rec/' training_data/<name>/inference/inference.yml
 
-# 8. Convert to ONNX (uses separate env — see "ONNX export environment setup")
-onnx_export/.venv/Scripts/paddle2onnx.exe \
-    --model_dir training_data/<name>/inference \
-    --model_filename inference.json \
-    --params_filename inference.pdiparams \
-    --save_file training_data/<name>/inference/inference.onnx \
-    --opset_version 14
+# 8. Export to ONNX
+uv run python export.py training_data/<name>/inference
 
-# 9. Deploy to production (only .onnx + dict.txt needed at runtime)
-mkdir -p overwatchlooker/models/<name>
-cp training_data/<name>/inference/inference.onnx overwatchlooker/models/<name>/
-cp training_data/<name>/dict.txt overwatchlooker/models/<name>/
+# 9. Deploy to production
+cp training_data/<name>/inference/inference.onnx ../overwatchlooker/models/<name>/
+cp training_data/<name>/dict.txt ../overwatchlooker/models/<name>/
 ```
-
-Training config checklist:
-- `Train` data_dir + label_file_list → `<name>_aug/` (augmented)
-- `Eval` data_dir + label_file_list → `<name>/` (original, clean)
-- `save_model_dir` + `save_res_path` → `<name>/output/` (not aug)
-- `character_dict_path` → `<name>_aug/dict.txt` (copied by preprocess_recaug)
-- NO `RecAug` in transforms (already pre-applied)
-- `checkpoints` field must be empty/cleared before export

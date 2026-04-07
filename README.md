@@ -199,7 +199,8 @@ overwatchlooker/
   overwolf.py                    # Overwolf GEP receiver (typed events, queue, recording)
   recording_uploader.py          # Background tus resumable upload of recordings
   llm_analyzer.py                # Codex vision-based Tab screen analyzer (fallback mode)
-  models/                        # Finetuned PaddleOCR inference models (Git LFS)
+  ocr.py                         # ONNX Runtime OCR inference wrapper
+  models/                        # ONNX inference models + character dicts
     panel_labels/                # Stat label OCR (Config Medium, A-Z + space)
     panel_values/                # Stat value OCR (Futura, 0-9 + % + , + . + :)
     panel_featured/              # Featured stat value OCR (Big Noodle Titling Oblique)
@@ -211,6 +212,7 @@ docs/
   websocket-protocol.md          # WebSocket event protocol reference
   hero-panel-ocr.md              # Hero panel OCR + rank detection technical reference
   training-ocr-models.md         # Guide for training new OCR models
+everything_paddle/               # PaddleOCR training, data generation, ONNX export (separate uv project)
 recordings/                      # Manual recorded gameplay sessions
 recordings_auto/                 # Auto-recorded match sessions
 logs/                            # Timestamped log files

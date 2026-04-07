@@ -1,0 +1,45 @@
+[project]
+name = "everything-paddle"
+version = "0.1.0"
+description = "PaddleOCR training, data generation, and ONNX export for OverwatchLooker"
+requires-python = ">=3.11"
+dependencies = [
+    # Training (GPU) + ONNX export — pinned to 3.1.1 for paddle2onnx compatibility
+    "paddlepaddle-gpu==3.1.1",
+    "paddle2onnx==2.0.2rc3",
+    "onnxruntime>=1.10.0",
+    "onnxoptimizer>=0.3.0",
+    "onnx-graphsurgeon>=0.5.0",
+    "colored",
+    # Training data generation & augmentation
+    "Pillow>=10.0.0",
+    "opencv-contrib-python>=4.8.0",
+    "numpy>=1.24.0",
+    "scikit-image>=0.21.0",
+    "albumentations>=1.3.0",
+    "lmdb>=1.4.0",
+    "rapidfuzz>=3.0.0",
+    "pyclipper>=1.3.0",
+    "shapely>=2.0.0",
+    "requests>=2.28.0",
+    "tqdm>=4.60.0",
+    # Misc
+    "packaging>=24.1",
+    "setuptools>=70.2.0",
+]
+
+[[tool.uv.index]]
+name = "paddle-gpu"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu126/"
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-gpu" }
+onnxoptimizer = { index = "pypi" }
+paddle2onnx = { index = "pypi" }
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"

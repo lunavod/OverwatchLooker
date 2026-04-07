@@ -50,11 +50,12 @@ fonts/
 
 # Tesseract training
 tesstrain/
-training_data/
 debug_slicing/
 
-# PaddleOCR
-paddleocr_repo/
+# Paddle training & export (everything_paddle/ is a self-contained subproject)
+everything_paddle/paddleocr_repo/
+everything_paddle/training_data/
+everything_paddle/.venv/
 
 # Test screenshots (not fixtures)
 test_*.png

@@ -58,7 +58,7 @@ Stat rows follow a repeating pattern: bold white value, then smaller gray label 
 
 ## OCR Models
 
-Three separate PaddleOCR recognition models, finetuned from PP-OCRv5 server rec (PPHGNetV2_B4 backbone + SVTR neck + MultiHead CTC/NRTR):
+Three recognition models, finetuned from PP-OCRv5 server rec (PPHGNetV2_B4 backbone + SVTR neck + MultiHead CTC/NRTR). Trained with PaddleOCR, exported to ONNX, inference via ONNX Runtime (CPU). See [training-ocr-models.md](training-ocr-models.md) for training and export details.
 
 ### Labels Model (v1)
 
