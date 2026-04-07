@@ -15,6 +15,9 @@ wheels/
 # Claude Code
 .claude/
 
+# Upload cache
+.upload_cache/
+
 *.jpg
 *.jpeg
 *.png
