@@ -707,14 +707,21 @@ def _find_scoreboard_rect(mask: np.ndarray) -> tuple[int, int, int, int] | None:
 
 def _count_rows(img_bgr: np.ndarray, bx: int, by: int, bw: int, bh: int) -> int:
     """Count player rows via white text density peaks in the right half."""
-    from scipy.ndimage import uniform_filter1d  # type: ignore[import-untyped]
-    from scipy.signal import find_peaks  # type: ignore[import-untyped]
-
     roi = img_bgr[by:by + bh, bx + bw // 2:bx + bw]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     density = np.mean((gray > 140).astype(float), axis=1)
-    smoothed = uniform_filter1d(density, size=8)
-    peaks, _ = find_peaks(smoothed, height=0.01, distance=bh // 10)
+    # Sliding average (replaces scipy.ndimage.uniform_filter1d)
+    kernel = np.ones(8) / 8
+    smoothed = np.convolve(density, kernel, mode="same")
+    # Find local maxima (replaces scipy.signal.find_peaks)
+    min_dist = max(1, bh // 10)
+    peaks: list[int] = []
+    for i in range(1, len(smoothed) - 1):
+        if smoothed[i] <= 0.01:
+            continue
+        if smoothed[i] > smoothed[i - 1] and smoothed[i] > smoothed[i + 1]:
+            if not peaks or (i - peaks[-1]) >= min_dist:
+                peaks.append(i)
     return len(peaks)
 
 

@@ -10,22 +10,13 @@ dependencies = [
     "pystray>=0.19.5",
     "Pillow>=10.0.0",
     "python-dotenv>=1.0.0",
-    "easyocr>=1.7.0",
     "opencv-contrib-python>=4.8.0",
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "proc-tap>=1.0.0",
-    "scipy>=1.10.0",
-    "soundfile>=0.12.0",
     "anthropic>=0.83.0",
     "codex-open-client[pydantic]>=0.1.0",
     "litellm>=1.81.14",
-    "telethon>=1.37.0",
-    "questionary>=2.1.1",
     "pytesseract-api>=1.0.4",
     "websockets>=16.0",
     "mcp>=1.0.0",
-    "pypdfium2>=4.0.0",
     "onnxruntime>=1.17.0",
     "tuspy>=1.0.0",
     "memoir-capture>=0.1.4",
@@ -37,14 +28,6 @@ markers = [
     "screenshots: requires real screenshots in tests/fixtures",
     "live: calls real LLM APIs (opt-in, never runs by default)",
 ]
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
 
 [dependency-groups]
 dev = [

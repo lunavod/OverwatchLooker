@@ -72,14 +72,25 @@ def export_one(name: str, model_dir: Path) -> bool:
         return False
 
     out_file.write_bytes(onnx_bytes)
-    size_mb = out_file.stat().st_size / (1024 * 1024)
+    raw_mb = out_file.stat().st_size / (1024 * 1024)
 
-    if size_mb < 1:
-        print(f"  FAILED: output is only {size_mb:.3f} MB (expected ~73 MB)")
+    if raw_mb < 1:
+        print(f"  FAILED: output is only {raw_mb:.3f} MB (expected ~72 MB)")
         out_file.unlink()
         return False
 
-    print(f"  -> {size_mb:.1f} MB")
+    # Optimize: constant folding, dead code elimination, fused ops.
+    # Removes unused initializers so ONNX Runtime doesn't warn at load time.
+    from onnxruntime import InferenceSession, SessionOptions, GraphOptimizationLevel
+    opts = SessionOptions()
+    opts.graph_optimization_level = GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.optimized_model_filepath = str(out_file)
+    opts.log_severity_level = 3
+    InferenceSession(str(out_file), sess_options=opts,
+                     providers=["CPUExecutionProvider"])
+    opt_mb = out_file.stat().st_size / (1024 * 1024)
+
+    print(f"  -> {opt_mb:.1f} MB (optimized from {raw_mb:.1f} MB)")
     return True
 
 
