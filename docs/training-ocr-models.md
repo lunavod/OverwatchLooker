@@ -311,16 +311,53 @@ sed -i 's/panel_featured_rec/PP-OCRv5_server_rec/' training_data/panel_featured/
 
 The sed pattern is always `s/<config_model_name>/PP-OCRv5_server_rec/` where `<config_model_name>` is the `model_name` from your training config's `Global` section.
 
-## Step 5: Test on Real Screenshots
+## Step 5: Export to ONNX
 
-Test the exported model directly:
+After exporting the PaddlePaddle inference model, convert it to ONNX format. The app uses ONNX Runtime for inference (no PaddlePaddle dependency at runtime).
+
+### ONNX export environment setup
+
+The export requires a separate Python environment because `paddle2onnx` has strict version requirements that conflict with the main project's PaddlePaddle version.
+
+**One-time setup** from the repo root:
+
+```bash
+cd onnx_export
+uv sync          # creates .venv with Python 3.11 + paddlepaddle 3.1.1 + paddle2onnx 2.0.2rc3
+```
+
+If setting up from scratch (no `onnx_export/` directory):
+
+```bash
+mkdir onnx_export && cd onnx_export
+uv init --python 3.11 --no-workspace
+uv add paddlepaddle==3.1.1 paddle2onnx==2.0.2rc3 packaging setuptools onnxruntime onnx_graphsurgeon colored
+```
+
+**Why a separate env?** `paddle2onnx` ships a C++ extension DLL that must match the PaddlePaddle version exactly. The main project uses PaddlePaddle 3.3+ (for GPU training), but `paddle2onnx` 2.0.2rc3 only works with PaddlePaddle 3.1.1. The Python version doesn't matter — the constraint is the PaddlePaddle DLL compatibility.
+
+### Export command
+
+```bash
+onnx_export/.venv/Scripts/paddle2onnx.exe \
+    --model_dir training_data/<name>/inference \
+    --model_filename inference.json \
+    --params_filename inference.pdiparams \
+    --save_file training_data/<name>/inference/inference.onnx \
+    --opset_version 14
+```
+
+Verify the output file is ~73 MB (not 0 bytes). If it's 0 bytes, the export silently failed — check that you're using the `onnx_export/` env's `paddle2onnx.exe`, not the main env's.
+
+## Step 6: Test on Real Screenshots
+
+Test the exported ONNX model:
 
 ```python
-from paddlex import create_model
+from overwatchlooker.ocr import OnnxRecModel
 import cv2
 
-model = create_model(model_name='PP-OCRv5_server_rec',
-                     model_dir='training_data/panel_featured/inference')
+model = OnnxRecModel('training_data/panel_featured/inference')
 img = cv2.imread('path/to/cropped_value.png')
 result = list(model.predict(img))
 print(result[0]["rec_text"], result[0]["rec_score"])
@@ -339,21 +376,19 @@ Expected output: every label and value read correctly. If not, check:
 3. **Commas read as periods**: Ensure `,` is in the character dictionary and training data has comma-number samples.
 4. **Featured value wrong**: Check the font — the game uses a different font for the featured stat than for regular values.
 
-## Step 6: Deploy
+## Step 7: Deploy
 
-Copy the exported inference model to the production location:
+Copy the exported model files to the production location:
 
 ```bash
-cp training_data/panel_featured/inference/* overwatchlooker/models/panel_featured/
-cp training_data/panel_featured/dict.txt overwatchlooker/models/panel_featured/
+mkdir -p overwatchlooker/models/<name>
+cp training_data/<name>/inference/inference.onnx overwatchlooker/models/<name>/
+cp training_data/<name>/dict.txt overwatchlooker/models/<name>/
 ```
 
-Commit via git (`.pdiparams` files are tracked via Git LFS).
+Only `inference.onnx` and `dict.txt` are needed at runtime. The `.json` and `.pdiparams` files are only needed for re-export.
 
-Then wire it into `hero_panel.py`:
-1. Add a lazy-loaded model function (`_get_featured_model()`) following the pattern of `_get_values_model()`
-2. Add it to `preload_models()`
-3. Use it in the appropriate OCR function
+Commit via git (`.onnx` files are tracked via Git LFS).
 
 ## Lessons Learned
 
@@ -414,7 +449,7 @@ uv run python tools/preprocess_recaug.py \
 # 5. Train (~35 min on RTX 4080, first good checkpoint ~10 min)
 uv run python -m paddleocr_repo.tools.train -c training_data/<name>_finetune.yml
 
-# 6. Export
+# 6. Export PaddlePaddle inference model
 uv run python -m paddleocr_repo.tools.export_model \
   -c training_data/<name>_finetune.yml \
   -o Global.checkpoints=./training_data/<name>/output/best_accuracy \
@@ -423,9 +458,17 @@ uv run python -m paddleocr_repo.tools.export_model \
 # 7. Fix model name in exported config
 sed -i 's/<name>_rec/PP-OCRv5_server_rec/' training_data/<name>/inference/inference.yml
 
-# 8. Deploy to production
+# 8. Convert to ONNX (uses separate env — see "ONNX export environment setup")
+onnx_export/.venv/Scripts/paddle2onnx.exe \
+    --model_dir training_data/<name>/inference \
+    --model_filename inference.json \
+    --params_filename inference.pdiparams \
+    --save_file training_data/<name>/inference/inference.onnx \
+    --opset_version 14
+
+# 9. Deploy to production (only .onnx + dict.txt needed at runtime)
 mkdir -p overwatchlooker/models/<name>
-cp training_data/<name>/inference/* overwatchlooker/models/<name>/
+cp training_data/<name>/inference/inference.onnx overwatchlooker/models/<name>/
 cp training_data/<name>/dict.txt overwatchlooker/models/<name>/
 ```
 

@@ -64,9 +64,10 @@ class RankScreenSystem:
         self._pixel_threshold = 200
 
         # Models (loaded lazily, cached across matches)
-        self._rank_model = None
-        self._values_model = None
-        self._modifiers_model = None
+        from overwatchlooker.ocr import OnnxRecModel
+        self._rank_model: OnnxRecModel | None = None
+        self._values_model: OnnxRecModel | None = None
+        self._modifiers_model: OnnxRecModel | None = None
 
         # Completion signal
         self._done = threading.Event()
@@ -140,17 +141,11 @@ class RankScreenSystem:
         """Load OCR models (once, cached across matches)."""
         if self._rank_model is not None:
             return
-        from paddlex import create_model  # type: ignore[import-untyped]
+        from overwatchlooker.ocr import OnnxRecModel
         _logger.info("Rank screen: loading OCR models...")
-        self._rank_model = create_model(
-            model_name="PP-OCRv5_server_rec",
-            model_dir=str(_RANK_MODEL_DIR))
-        self._values_model = create_model(
-            model_name="PP-OCRv5_server_rec",
-            model_dir=str(_VALUES_MODEL_DIR))
-        self._modifiers_model = create_model(
-            model_name="PP-OCRv5_server_rec",
-            model_dir=str(_MODIFIERS_MODEL_DIR))
+        self._rank_model = OnnxRecModel(_RANK_MODEL_DIR)
+        self._values_model = OnnxRecModel(_VALUES_MODEL_DIR)
+        self._modifiers_model = OnnxRecModel(_MODIFIERS_MODEL_DIR)
         _logger.info("Rank screen: models loaded")
 
     @staticmethod

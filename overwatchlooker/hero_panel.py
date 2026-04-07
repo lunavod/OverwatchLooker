@@ -27,30 +27,11 @@ _featured_model = None
 _side_model = None
 
 
-def _suppress_paddle_warnings():
-    """Suppress noisy paddle/paddlex warnings during model loading."""
-    import os
-    import warnings
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-    os.environ["GLOG_minloglevel"] = "2"  # suppress C++ INFO/WARNING
-    warnings.filterwarnings("ignore", category=UserWarning)
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    warnings.filterwarnings("ignore", message=".*RequestsDependencyWarning.*")
-    warnings.filterwarnings("ignore", message=".*ccache.*")
-    for name in ("paddle", "paddlex", "paddleocr", "urllib3", "requests",
-                 "chardet", "charset_normalizer"):
-        logging.getLogger(name).setLevel(logging.ERROR)
-
-
 def _get_labels_model():
     global _labels_model
     if _labels_model is None:
-        _suppress_paddle_warnings()
-        from paddlex import create_model  # type: ignore[import-untyped]
-        _labels_model = create_model(
-            "PP-OCRv5_server_rec",
-            model_dir=str(_MODELS_DIR / "panel_labels"),
-        )
+        from overwatchlooker.ocr import OnnxRecModel
+        _labels_model = OnnxRecModel(_MODELS_DIR / "panel_labels")
         _logger.info("Loaded panel labels OCR model")
     return _labels_model
 
@@ -58,12 +39,8 @@ def _get_labels_model():
 def _get_values_model():
     global _values_model
     if _values_model is None:
-        _suppress_paddle_warnings()
-        from paddlex import create_model  # type: ignore[import-untyped]
-        _values_model = create_model(
-            "PP-OCRv5_server_rec",
-            model_dir=str(_MODELS_DIR / "panel_values"),
-        )
+        from overwatchlooker.ocr import OnnxRecModel
+        _values_model = OnnxRecModel(_MODELS_DIR / "panel_values")
         _logger.info("Loaded panel values OCR model")
     return _values_model
 
@@ -71,12 +48,8 @@ def _get_values_model():
 def _get_featured_model():
     global _featured_model
     if _featured_model is None:
-        _suppress_paddle_warnings()
-        from paddlex import create_model  # type: ignore[import-untyped]
-        _featured_model = create_model(
-            "PP-OCRv5_server_rec",
-            model_dir=str(_MODELS_DIR / "panel_featured"),
-        )
+        from overwatchlooker.ocr import OnnxRecModel
+        _featured_model = OnnxRecModel(_MODELS_DIR / "panel_featured")
         _logger.info("Loaded panel featured OCR model")
     return _featured_model
 
@@ -84,19 +57,14 @@ def _get_featured_model():
 def _get_side_model():
     global _side_model
     if _side_model is None:
-        _suppress_paddle_warnings()
-        from paddlex import create_model  # type: ignore[import-untyped]
-        _side_model = create_model(
-            "PP-OCRv5_server_rec",
-            model_dir=str(_MODELS_DIR / "team_side"),
-        )
+        from overwatchlooker.ocr import OnnxRecModel
+        _side_model = OnnxRecModel(_MODELS_DIR / "team_side")
         _logger.info("Loaded team side OCR model")
     return _side_model
 
 
 def preload_models():
     """Load OCR models eagerly. Call at startup to avoid delay on first match."""
-    _suppress_paddle_warnings()
     _logger.info("Preloading OCR models...")
     _get_values_model()
     _get_featured_model()
@@ -606,9 +574,9 @@ def _load_hero_templates() -> dict[str, np.ndarray]:
     return _hero_templates
 
 
-# Known optimal scales: 0.34 for 4K (3840x2160), 0.17 for 1080p (1920x1080).
-# Try these first for speed, then fall back to a broader scan.
-_BAN_PREFERRED_SCALES = [0.34, 0.17]
+# Known optimal scales: 0.34 for 4K (3840x2160), 0.227 for 1440p (2560x1440),
+# 0.17 for 1080p (1920x1080). Try these first for speed, then fall back.
+_BAN_PREFERRED_SCALES = [0.34, 0.227, 0.17]
 _BAN_FALLBACK_SCALES = [float(s) for s in np.arange(0.2, 0.6, 0.05)
                         if abs(s - 0.34) > 0.02 and abs(s - 0.17) > 0.02]
 
@@ -624,13 +592,16 @@ def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
     templates = _load_hero_templates()
     h, w = img.shape[:2]
 
-    # Search top 6%, center portion (bans are in the top bar, center-left)
-    roi = img[:int(h * 0.06), int(w * 0.15):int(w * 0.55)]
+    # Search top 8%, center portion (bans are in the top bar, center-left)
+    roi = img[:int(h * 0.08), int(w * 0.15):int(w * 0.55)]
     rh, rw = roi.shape[:2]
+
+    _logger.info(f"Ban detection: image {w}x{h}, ROI {rw}x{rh}")
 
     def _scan(scales: list[float],
               skip: set[str] | None = None) -> list[tuple[str, float, int]]:
         found: list[tuple[str, float, int]] = []
+        near_misses: list[tuple[str, float]] = []
         for hero, tmpl in templates.items():
             if skip and hero in skip:
                 continue
@@ -651,6 +622,12 @@ def detect_hero_bans(img: np.ndarray, threshold: float = 0.8) -> list[str]:
                 found.append((hero, best_val, best_x))
                 if len(found) + (len(skip) if skip else 0) >= 4:
                     break
+            elif best_val >= threshold - 0.15:
+                near_misses.append((hero, best_val))
+        if near_misses:
+            near_misses.sort(key=lambda x: x[1], reverse=True)
+            _logger.info(f"Ban near-misses (scales={scales[0]:.2f}..): "
+                         f"{[(h, f'{v:.3f}') for h, v in near_misses[:8]]}")
         return found
 
     # Pass 1: preferred scales (fast — 2 scales × 50 heroes)

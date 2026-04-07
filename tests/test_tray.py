@@ -283,6 +283,30 @@ class TestOverwolfEventHandling:
         app._on_overwolf_event(RosterUpdate(slot=0, entry=entry, timestamp=1000))
         assert len(app._match_state.players["P1#1"].hero_swaps) == 0
 
+    def test_slot_takeover_sets_left_at(self, app):
+        """When a new player takes an occupied slot, the old player gets left_at."""
+        _add_roster_player(app, "Player1", "Player1#1111", slot=3, ts=1000)
+        old = app._match_state.players["PLAYER1#1111"]
+        assert old.left_at is None
+
+        # New player takes slot 3
+        _add_roster_player(app, "Player2", "Player2#2222", slot=3, ts=5000)
+        assert old.left_at == 5000
+        new = app._match_state.players["PLAYER2#2222"]
+        assert new.joined_at == 5000
+        assert new.left_at is None
+
+    def test_slot_takeover_no_double_mark(self, app):
+        """If old player already has left_at, don't overwrite it."""
+        _add_roster_player(app, "Player1", "Player1#1111", slot=3, ts=1000)
+        old = app._match_state.players["PLAYER1#1111"]
+        app._on_player_change("PLAYER1", "left", 3.0)
+        assert old.left_at == 3000
+
+        # New player takes slot 3 — left_at should stay at 3000
+        _add_roster_player(app, "Player2", "Player2#2222", slot=3, ts=5000)
+        assert old.left_at == 3000
+
     def test_reconnect_stats_offset(self, app):
         """When stats drop, treat as reconnect and add offset."""
         from overwatchlooker.overwolf import RosterUpdate, RosterEntry

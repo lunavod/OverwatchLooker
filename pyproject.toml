@@ -26,7 +26,8 @@ dependencies = [
     "websockets>=16.0",
     "mcp>=1.0.0",
     "pypdfium2>=4.0.0",
-    "paddlex>=3.4.2",
+    "onnxruntime>=1.17.0",
+    "tuspy>=1.0.0",
     "memoir-capture>=0.1.4",
 ]
 

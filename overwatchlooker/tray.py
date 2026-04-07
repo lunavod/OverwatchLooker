@@ -142,29 +142,11 @@ class App:
 
     @staticmethod
     def _preload_models() -> None:
-        import io
-        import os
-        import sys
-        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-        os.environ["GLOG_minloglevel"] = "2"
-        # Suppress `where ccache` noise on Windows by patching subprocess
-        import subprocess
-        _real_check_output = subprocess.check_output
-        def _quiet_check_output(cmd, *args, **kwargs):
-            kwargs.setdefault("stderr", subprocess.DEVNULL)
-            return _real_check_output(cmd, *args, **kwargs)
-        subprocess.check_output = _quiet_check_output  # type: ignore[assignment]
-        # Redirect stderr to suppress C-level noise from paddle init
-        old_stderr = sys.stderr
-        sys.stderr = io.StringIO()
         try:
             from overwatchlooker.hero_panel import preload_models
             preload_models()
         except Exception as e:
             _logger.warning(f"OCR model preload failed: {e}")
-        finally:
-            sys.stderr = old_stderr
-            subprocess.check_output = _real_check_output
 
     def _register_commands(self, bus: EventBus) -> None:
         """Register command handlers on the event bus."""
@@ -370,6 +352,14 @@ class App:
             local_tag = " [LOCAL]" if entry.is_local else ""
             _logger.info(f"Roster new player: {entry.player_name} ({entry.battlenet_tag}) "
                          f"team={entry.team} slot={event.slot}{local_tag}")
+            # Slot takeover: if another player held this slot, they disconnected
+            for other in ms.players.values():
+                if (other is not player
+                        and other.slot == event.slot
+                        and other.left_at is None):
+                    other.left_at = event.timestamp
+                    _logger.info(f"Slot {event.slot} takeover: {other.battletag} "
+                                 f"disconnected (replaced by {entry.battlenet_tag})")
 
         # Resolve local team and derive team sides
         if entry.is_local and ms._local_team != entry.team:
